@@ -886,6 +886,133 @@ body {
   font-weight: 600;
 }
 
+/* -- Difficulty picker ----------------------------------------------------- */
+
+.difficulty-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+}
+
+.difficulty-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.difficulty-option {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--on-surface);
+  font: 500 0.86rem/1.3 var(--font);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  isolation: isolate;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background-color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+/* Material state layer, same recipe as .btn / .bind-row. */
+.difficulty-option::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: currentColor;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease);
+  z-index: -1;
+}
+
+.difficulty-option:hover::before {
+  opacity: var(--state-hover);
+}
+
+.difficulty-option:focus-visible::before {
+  opacity: var(--state-focus);
+}
+
+.difficulty-option:active::before {
+  opacity: var(--state-press);
+}
+
+.difficulty-option:focus {
+  outline: none;
+}
+
+.difficulty-option:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.difficulty-option.is-selected {
+  border-color: var(--primary-light);
+  background: rgba(124, 77, 255, 0.16);
+  box-shadow: inset 0 0 0 1px var(--primary-light);
+}
+
+/* The selected marker, next to aria-checked for anyone not seeing colour. */
+.difficulty-option.is-selected::after {
+  content: '✓';
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  font-size: 0.9rem;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--primary-light);
+}
+
+.difficulty-name {
+  padding-right: 20px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--on-surface);
+}
+
+.difficulty-option.is-selected .difficulty-name {
+  color: var(--primary-light);
+}
+
+.difficulty-blurb {
+  font-size: 0.76rem;
+  line-height: 1.35;
+  color: var(--on-surface-variant);
+}
+
+/* Hardcore wears the error colour: it should look like a warning. */
+.difficulty-option[data-difficulty='hardcore'] {
+  border-color: rgba(255, 92, 138, 0.35);
+}
+
+.difficulty-option[data-difficulty='hardcore'] .difficulty-name {
+  color: var(--error);
+}
+
+.difficulty-option[data-difficulty='hardcore'].is-selected {
+  border-color: var(--error);
+  background: rgba(255, 92, 138, 0.16);
+  box-shadow: inset 0 0 0 1px var(--error), 0 0 22px rgba(255, 92, 138, 0.22);
+}
+
+.difficulty-option[data-difficulty='hardcore'].is-selected::after,
+.difficulty-option[data-difficulty='hardcore'].is-selected .difficulty-name {
+  color: var(--error);
+}
+
 /* -- How to play ---------------------------------------------------------- */
 
 .howto-list {
@@ -910,6 +1037,54 @@ body {
   font-size: 1.2rem;
   line-height: 1.3;
   text-align: center;
+}
+
+.howto-tiers {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.howto-tier {
+  display: grid;
+  grid-template-columns: 6.5em 1fr;
+  gap: 12px;
+  align-items: baseline;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--outline-soft);
+  border-left: 3px solid var(--primary);
+  border-radius: var(--radius-sm);
+}
+
+.howto-tier[data-difficulty='hardcore'] {
+  border-left-color: var(--error);
+}
+
+.howto-tier[data-difficulty='hard'] {
+  border-left-color: var(--warn);
+}
+
+.howto-tier[data-difficulty='chill'] {
+  border-left-color: var(--good);
+}
+
+.howto-tier-name {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--on-surface);
+}
+
+.howto-tier[data-difficulty='hardcore'] .howto-tier-name {
+  color: var(--error);
+}
+
+.howto-tier-blurb {
+  font-size: 0.85rem;
+  color: var(--on-surface-variant);
 }
 
 .howto-keys {
@@ -1118,6 +1293,35 @@ body {
   letter-spacing: 0.08em;
 }
 
+.hud-chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hud-difficulty {
+  padding: 3px 10px;
+  background: rgba(46, 46, 64, 0.72);
+  border-color: var(--outline);
+  color: var(--on-surface-variant);
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.hud-difficulty[data-difficulty='hard'] {
+  border-color: rgba(255, 180, 84, 0.5);
+  color: var(--warn);
+}
+
+.hud-difficulty[data-difficulty='hardcore'] {
+  background: rgba(255, 92, 138, 0.16);
+  border-color: rgba(255, 92, 138, 0.6);
+  color: var(--error);
+  font-weight: 800;
+}
+
 .hud-next {
   align-items: center;
   gap: 6px;
@@ -1190,6 +1394,84 @@ body {
   }
   50% {
     box-shadow: 0 0 14px 2px rgba(255, 92, 138, 0.6);
+  }
+}
+
+/* -- Hazard readout -------------------------------------------------------- */
+
+.hud-hazard {
+  position: absolute;
+  left: 50%;
+  bottom: max(34px, calc(env(safe-area-inset-bottom) + 22px));
+  transform: translateX(-50%);
+  width: min(380px, 78vw);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 14px 10px;
+  background: rgba(26, 26, 36, 0.9);
+  border: 1px solid rgba(255, 180, 84, 0.55);
+  border-radius: var(--radius);
+  box-shadow: var(--elev-2);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation:
+    chip-pop 260ms var(--ease-out) both,
+    hazard-pulse 1.8s var(--ease) 260ms infinite;
+}
+
+.hud-hazard[data-hazard='rush'],
+.hud-hazard[data-hazard='stone'] {
+  border-color: rgba(255, 92, 138, 0.6);
+}
+
+.hud-hazard-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hud-hazard-icon {
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.hud-hazard-label {
+  flex: 1 1 auto;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--warn);
+}
+
+.hud-hazard-time {
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: var(--on-surface-variant);
+}
+
+.hud-hazard-bar {
+  height: 5px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.hud-hazard-fill {
+  height: 100%;
+  width: 100%;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(90deg, var(--error), var(--warn));
+  transition: width 90ms linear;
+}
+
+@keyframes hazard-pulse {
+  0%,
+  100% {
+    box-shadow: var(--elev-2);
+  }
+  50% {
+    box-shadow: var(--elev-2), 0 0 16px 2px rgba(255, 180, 84, 0.4);
   }
 }
 
@@ -1359,6 +1641,21 @@ body {
     width: 48px;
     height: 48px;
   }
+
+  .difficulty-blurb {
+    font-size: 0.72rem;
+  }
+
+  .howto-tier {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
+
+@media (max-width: 380px) {
+  .difficulty-picker {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (max-height: 620px) {
@@ -1401,6 +1698,7 @@ body {
 
 :root[data-reduced-motion='on'] .wordmark,
 :root[data-reduced-motion='on'] .bind-row.is-listening,
+:root[data-reduced-motion='on'] .hud-hazard,
 :root[data-reduced-motion='on'] .hud-rise.is-danger {
   animation: none !important;
 }
@@ -1430,6 +1728,7 @@ body {
 
   :root:not([data-reduced-motion='off']) .wordmark,
   :root:not([data-reduced-motion='off']) .bind-row.is-listening,
+  :root:not([data-reduced-motion='off']) .hud-hazard,
   :root:not([data-reduced-motion='off']) .hud-rise.is-danger {
     animation: none !important;
   }

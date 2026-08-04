@@ -2,6 +2,8 @@ import './style.css'
 import {
   AIM_KEY_SPEED,
   CURSE_DURATION,
+  DIFFICULTIES,
+  STONE_HEX,
   LAUNCH_X,
   LAUNCH_Y,
   MAX_AIM_ANGLE,
@@ -244,6 +246,25 @@ function wireGame(g: Game): () => void {
       audio.popMusicEvent(`curse:${kind}`)
       hud.announce(`${CURSE_LABEL[kind]} wore off`, 'good')
     }),
+    // The renderer draws the on-board banner and the HUD owns the countdown and
+    // the announcement, so this handler only adds the felt reaction.
+    ev.on('hazardStart', ({ kind }) => {
+      audio.play('curseHit')
+      audio.pushMusicEvent(`hazard:${kind}`, kind === 'rush' ? 'surge' : 'curse')
+      juice.shake(0.5, 0.5)
+      juice.flash(kind === 'stone' ? STONE_HEX : '#ff5c8a', 0.35)
+    }),
+    ev.on('hazardEnd', ({ kind }) => {
+      audio.popMusicEvent(`hazard:${kind}`)
+      audio.play('levelUp', { volume: 0.6 })
+    }),
+    ev.on('armorHit', ({ row, col }) => {
+      // Armour absorbing a clear needs to read as a hit, not as nothing.
+      audio.play('bounce', { pitch: 0.6, volume: 0.9 })
+      const p = cellToScreen(col + 0.5, row + 0.5)
+      particles.burst(p.x, p.y, '#c9d1e0', { count: 8, speed: 120, life: 0.35 })
+      juice.shake(0.12, 0.12)
+    }),
   )
 
   return () => {
@@ -270,7 +291,7 @@ function startSolo(fromSave: boolean): void {
   }
   if (!g) {
     clearSave()
-    g = createGame({ seed: (Math.random() * 0x7fffffff) | 0 })
+    g = createGame({ seed: (Math.random() * 0x7fffffff) | 0, difficulty: settings.difficulty })
   }
   attachGame(g)
   lastCoherentSave = g.serialize()
@@ -653,7 +674,9 @@ function frame(now: number): void {
     demoGame.setAim(Math.sin(now / 1600) * 0.9)
   }
   const isAiming = shown.state.phase === 'aiming'
-  const showAim = shown === active ? isAiming && !fogged() : isAiming
+  // Hardcore hides the guide entirely: you learn the bounces or you don't.
+  const guideAllowed = DIFFICULTIES[shown.state.difficulty].aimGuide
+  const showAim = guideAllowed && (shown === active ? isAiming && !fogged() : isAiming)
   renderer.render(shown.state, {
     aimPath: showAim ? computeAimPath(shown.state) : null,
     opponent: mode === 'versus' ? opponentView : null,

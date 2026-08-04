@@ -5,7 +5,11 @@
 import {
   COLS,
   DEFAULT_SETTINGS,
+  DIFFICULTIES,
+  HAZARD_KINDS,
   ROWS,
+  type ActiveHazard,
+  type Difficulty,
   type GameAction,
   type KeyBindings,
   type SaveGame,
@@ -53,8 +57,10 @@ export function loadSave(): SaveGame | null {
   try {
     const data: unknown = JSON.parse(raw)
     if (typeof data !== 'object' || data === null) return null
-    const s = data as Partial<SaveGame>
-    if (s.version !== 1) return null
+    const s = data as Omit<Partial<SaveGame>, 'version'> & { version?: number }
+    // v1 predates difficulty tiers, armour and hazards. Rather than discard a
+    // run in progress, adopt it as a 'normal' game with a clean armour grid.
+    if (s.version !== 1 && s.version !== 2) return null
     if (!Array.isArray(s.grid) || s.grid.length !== ROWS * COLS) return null
     if (typeof s.current !== 'object' || s.current === null) return null
     if (typeof s.next !== 'object' || s.next === null) return null
@@ -68,7 +74,35 @@ export function loadSave(): SaveGame | null {
     ) {
       return null
     }
-    return s as SaveGame
+
+    const armor =
+      Array.isArray(s.armor) && s.armor.length === ROWS * COLS
+        ? s.armor.map((n) => (typeof n === 'number' && n > 0 ? Math.floor(n) : 0))
+        : new Array<number>(ROWS * COLS).fill(0)
+    const difficulty =
+      typeof s.difficulty === 'string' && s.difficulty in DIFFICULTIES ? s.difficulty : 'normal'
+    const hazards = Array.isArray(s.hazards)
+      ? s.hazards.filter(
+          (h): h is ActiveHazard =>
+            typeof h === 'object' &&
+            h !== null &&
+            typeof (h as ActiveHazard).kind === 'string' &&
+            HAZARD_KINDS.includes((h as ActiveHazard).kind) &&
+            typeof (h as ActiveHazard).remaining === 'number',
+        )
+      : []
+
+    return {
+      ...(s as SaveGame),
+      version: 2,
+      difficulty,
+      armor,
+      hazards,
+      // JSON turns the "hazards disabled" sentinel (Infinity) into null, so
+      // anything non-finite round-trips back to Infinity rather than to 0,
+      // which would read as "roll a hazard immediately".
+      hazardTimer: Number.isFinite(s.hazardTimer) ? (s.hazardTimer as number) : Infinity,
+    }
   } catch {
     return null
   }
@@ -131,6 +165,9 @@ export function loadSettings(): Settings {
   }
   if (typeof stored.playerName === 'string' && stored.playerName.length > 0) {
     merged.playerName = stored.playerName
+  }
+  if (typeof stored.difficulty === 'string' && stored.difficulty in DIFFICULTIES) {
+    merged.difficulty = stored.difficulty as Difficulty
   }
   return merged
 }

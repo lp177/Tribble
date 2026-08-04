@@ -75,11 +75,39 @@ Phases: `aiming → flying → resolving → aiming …` (+ terminal `gameover`)
      bag piece.
 5. **Rising stack.** `riseTimer` counts down (paused while resolving); at 0 a garbage row is
    inserted at the bottom (random colors, 2–3 holes from `miscRng`), pushing everything up
-   one row (`rise` event; `riseWarning` fires 1.5 s before). The interval shrinks
-   **asymptotically** — fast pressure early, then diminishing:
-   `riseInterval = RISE_MIN + (RISE_START − RISE_MIN) · exp(−elapsed / RISE_TAU)`
-   with `RISE_START = 14`, `RISE_MIN = 4.5`, `RISE_TAU = 240` (seconds).
-   The game starts with `INITIAL_ROWS = 4` garbage rows.
+   one row (`rise` event; `riseWarning` fires 1.5 s before). The interval decays towards a
+   floor **and** tightens with the player's level, so pressure comes from progress as well as
+   from the clock:
+   `base = riseMin + (riseStart − riseMin) · exp(−elapsed / riseTau)`
+   `riseInterval = max(RISE_FLOOR, base · riseLevelFactor^(level − 1))`
+   All four numbers come from the active `DifficultyConfig`; the game starts with
+   `cfg.initialRows` garbage rows.
+
+## Difficulty and hazards
+
+`DIFFICULTIES` (types.ts) defines four tiers — **chill / normal / hard / hardcore** — each
+carrying its own rise curve, starting rows, `clearsPerLevel`, hazard cadence, armour chance and
+`scoreScale`. The tier is chosen on the title screen, stored in `Settings.difficulty`, passed
+to `createGame` and recorded in the save so a resumed run keeps its rules. Versus always plays
+'normal' so both peers share the same tuning.
+
+**Hardcore** sets `stoneOnly` (colour matching is skipped entirely — `state.colorsLocked` is
+permanently true, so only line clears exist) and `aimGuide: false`, which makes main.ts pass
+`aimPath: null`. Blocks keep their stored colours; the renderer simply paints everything with
+`STONE_HEX`, so matching resumes correctly when a temporary lock ends.
+
+**Hazards** are solo-only variety (versus has curses instead). When `cfg.hazardEvery > 0` a
+timer rolls one hazard at a time, never repeating back-to-back: `stone` (colorsLocked for 14 s),
+`armor` (dealt pieces land armoured), `giant` (pieces come from `BIG_PIECE_KINDS`, the
+pentominoes, drawn off `miscRng` so the 7-bag stream stays deterministic) and `rush` (the rise
+timer ticks twice as fast, composing with the versus `speed` curse). `hazardStart`/`hazardEnd`
+drive the renderer's intro banner, the HUD countdown and a music takeover.
+
+**Armour** lives in `state.armor`, a `ROWS × COLS` grid parallel to `state.grid` that must move
+in lockstep with it everywhere a cell moves or dies. A clear that would remove an armoured cell
+decrements it and keeps the block (`armorHit`); only cells at armour 0 disappear. The critical
+invariant: a resolve step where **nothing actually disappeared** must end the cascade — armour
+damage alone must not keep it alive, or an all-armoured board loops forever.
 
 Scoring: color match = `40 × cells × chainMult`; line clear = `120 × n^1.5 × chainMult`
 (n = simultaneous lines), rounded; `chainMult = 2^(chain−1)` capped at 32. A **combo** counter

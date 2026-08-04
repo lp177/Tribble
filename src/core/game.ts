@@ -1,29 +1,33 @@
 import {
+  BIG_PIECE_KINDS,
   CHAIN_MULT_CAP,
-  CLEARS_PER_LEVEL,
   COLS,
   CURSE_DURATION,
   CURSE_KINDS,
   DANGER_ROWS,
-  INITIAL_ROWS,
+  DIFFICULTIES,
+  HAZARD_ARMOR,
+  HAZARD_DURATION,
+  HAZARD_KINDS,
   LAUNCH_SPEED,
   LAUNCH_X,
   LAUNCH_Y,
   MAX_AIM_ANGLE,
   MAX_INVENTORY,
+  MAX_PIECE_CELLS,
   MAX_POWERS,
   POWER_RADIUS,
   POWER_RISE_SPEED,
   RESOLVE_STEP,
-  RISE_MIN,
-  RISE_START,
-  RISE_TAU,
   RISE_WARNING_AT,
   ROWS,
   TOP_KILL_ROW,
   pieceOffsets,
+  type ActiveHazard,
   type AimPoint,
   type CurseKind,
+  type Difficulty,
+  type DifficultyConfig,
   type EventBus,
   type FlyingPiece,
   type Game,
@@ -32,6 +36,8 @@ import {
   type GameOptions,
   type GameState,
   type Grid,
+  type HazardKind,
+  type Match,
   type Piece,
   type PieceKind,
   type PlacedCell,
@@ -41,10 +47,13 @@ import {
 } from '../types'
 import {
   applyGravity,
+  armorToFlat,
   collides,
+  emptyArmor,
   emptyGrid,
   findLines,
   findMatches,
+  flatToArmor,
   flatToGrid,
   gridToFlat,
   insertGarbageRow,
@@ -66,6 +75,10 @@ const LOCK_LATERAL = [0, -1, 1, -2, 2] as const
 /** Simulated seconds of flight the aim preview is allowed to look ahead. */
 const AIM_MAX_TIME = 8
 const EMPTY_PAYLOAD: Record<string, never> = {}
+/** Hard floor for the rise interval, whatever the tier and level ask for. */
+const RISE_FLOOR = 0.8
+/** Shared stand-in while colour matching is off; never mutated. */
+const NO_MATCHES: Match[] = []
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v
@@ -136,13 +149,11 @@ interface Track {
   row: number
 }
 
+/** Sized for the largest piece, so a pentomino never writes past the end. */
 function makeScratch(): PlacedCell[] {
-  return [
-    { row: 0, col: 0, color: 0 },
-    { row: 0, col: 0, color: 0 },
-    { row: 0, col: 0, color: 0 },
-    { row: 0, col: 0, color: 0 },
-  ]
+  const out: PlacedCell[] = []
+  for (let i = 0; i < MAX_PIECE_CELLS; i++) out.push({ row: 0, col: 0, color: 0 })
+  return out
 }
 
 /** Fills a reusable cell buffer; valid until the next call with the same buffer. */
@@ -154,6 +165,14 @@ function fillCells(out: PlacedCell[], piece: Piece, x: number, y: number): Place
     cell.row = Math.floor(y + off.y)
     cell.col = Math.floor(x + off.x)
     cell.color = piece.colors[i]
+  }
+  // The buffer is one size for every shape, so a 4-cell piece leaves a slot
+  // over. Park it above the board, which `collides` reads as out of play.
+  for (let i = offs.length; i < out.length; i++) {
+    const cell = out[i]
+    cell.row = -1
+    cell.col = 0
+    cell.color = 0
   }
   return out
 }
@@ -337,7 +356,15 @@ function settle(grid: Grid, piece: Piece, x: number, y: number, scratch: PlacedC
 }
 
 function clonePiece(p: Piece): Piece {
-  return { kind: p.kind, rot: p.rot, colors: [p.colors[0], p.colors[1], p.colors[2], p.colors[3]] }
+  const copy: Piece = { kind: p.kind, rot: p.rot, colors: p.colors.slice() }
+  if (p.armor !== undefined) copy.armor = p.armor
+  return copy
+}
+
+function resolveDifficulty(id: Difficulty | undefined): DifficultyConfig {
+  if (id === undefined) return DIFFICULTIES.normal
+  const cfg: DifficultyConfig | undefined = DIFFICULTIES[id]
+  return cfg ?? DIFFICULTIES.normal
 }
 
 function drawFrom(bag: PieceKind[], rng: Rng): Piece {
@@ -358,11 +385,20 @@ export function createGame(opts: GameOptions): Game {
 }
 
 export function loadGame(save: SaveGame, opts?: Partial<GameOptions>): Game {
-  return buildGame({ seed: opts?.seed ?? 0, versus: opts?.versus ?? false }, save)
+  return buildGame(
+    {
+      seed: opts?.seed ?? 0,
+      versus: opts?.versus ?? false,
+      difficulty: save.difficulty ?? opts?.difficulty,
+    },
+    save,
+  )
 }
 
 function buildGame(opts: GameOptions, save: SaveGame | null): Game {
   const seed = opts.seed >>> 0
+  const cfg = resolveDifficulty(opts.difficulty)
+  const versus = opts.versus === true
   const bagRng = createRng(seed)
   const miscRng = createRng(seed ^ MISC_SEED_XOR)
   const bag: PieceKind[] = []
@@ -371,20 +407,77 @@ function buildGame(opts: GameOptions, save: SaveGame | null): Game {
   const mask = new Uint8Array(ROWS * COLS)
   const powerBase = new Map<number, number>()
 
+  // Hazards are a solo feature: versus already has curses to trade.
+  const hazardsEnabled = cfg.hazardEvery > 0 && !versus
+  const hazards: ActiveHazard[] = []
+  let lastHazard: HazardKind | null = null
+
+  function hasHazard(kind: HazardKind): boolean {
+    for (let i = 0; i < hazards.length; i++) {
+      if (hazards[i].kind === kind) return true
+    }
+    return false
+  }
+
+  /** Armour a freshly dealt piece lands with. */
+  function rollArmor(): number {
+    if (hasHazard('armor')) return HAZARD_ARMOR
+    if (cfg.armorChance <= 0) return 0
+    return miscRng.next() < cfg.armorChance ? 1 : 0
+  }
+
+  /**
+   * The next piece. `giant` pentominoes come off the misc stream so the 7-bag
+   * order survives the hazard untouched (and versus stays in lockstep).
+   */
+  function dealPiece(): Piece {
+    const piece = hasHazard('giant')
+      ? makePiece(miscRng.pick(BIG_PIECE_KINDS), miscRng)
+      : drawFrom(bag, bagRng)
+    const armor = rollArmor()
+    if (armor > 0) piece.armor = armor
+    return piece
+  }
+
   const grid: Grid = save ? flatToGrid(save.grid) : emptyGrid()
+  const armor: number[][] =
+    save && save.armor !== undefined && save.armor.length === ROWS * COLS
+      ? flatToArmor(save.armor)
+      : emptyArmor()
+  let hazardTimer = hazardsEnabled ? cfg.hazardEvery : Infinity
+
   if (save) {
     bagRng.setState(save.bagRngState)
     miscRng.setState(save.miscRngState)
     for (let i = 0; i < save.bag.length; i++) bag.push(save.bag[i])
+    // Armour only means something under a block.
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (grid[r][c] === null) armor[r][c] = 0
+      }
+    }
+    if (hazardsEnabled && save.hazards !== undefined) {
+      for (let i = 0; i < save.hazards.length; i++) {
+        const h = save.hazards[i]
+        if (h.remaining > 0) hazards.push({ kind: h.kind, remaining: h.remaining })
+      }
+      if (hazards.length > 0) lastHazard = hazards[hazards.length - 1].kind
+      if (Number.isFinite(save.hazardTimer)) hazardTimer = save.hazardTimer
+    }
   } else {
-    for (let i = 0; i < INITIAL_ROWS; i++) insertGarbageRow(grid, miscRng)
+    for (let i = 0; i < cfg.initialRows; i++) insertGarbageRow(grid, miscRng, armor)
   }
 
   const state: GameState = {
     grid,
+    armor,
+    difficulty: cfg.id,
+    hazards,
+    colorsLocked: cfg.stoneOnly || hasHazard('stone'),
+    hazardTimer,
     phase: 'aiming',
-    current: save ? clonePiece(save.current) : drawFrom(bag, bagRng),
-    next: save ? clonePiece(save.next) : drawFrom(bag, bagRng),
+    current: save ? clonePiece(save.current) : dealPiece(),
+    next: save ? clonePiece(save.next) : dealPiece(),
     flying: null,
     aimAngle: save ? clamp(save.aimAngle, -MAX_AIM_ANGLE, MAX_AIM_ANGLE) : 0,
     score: save ? save.score : 0,
@@ -393,10 +486,10 @@ function buildGame(opts: GameOptions, save: SaveGame | null): Game {
     chain: 0,
     combo: save ? save.combo : 0,
     elapsed: save ? save.elapsed : 0,
-    riseTimer: save ? save.riseTimer : RISE_START,
-    riseInterval: save ? save.riseInterval : RISE_START,
+    riseTimer: save ? save.riseTimer : cfg.riseStart,
+    riseInterval: save ? save.riseInterval : cfg.riseStart,
     danger: stackTopRow(grid) <= TOP_KILL_ROW + DANGER_ROWS,
-    versus: opts.versus === true,
+    versus,
     powers: [],
     inventory: [],
     activeCurses: [],
@@ -461,8 +554,18 @@ function buildGame(opts: GameOptions, save: SaveGame | null): Game {
 
   // -- rise -----------------------------------------------------------------
 
+  /**
+   * Pressure comes from both the clock and the player: the asymptotic decay of
+   * the tier's curve, then a per-level squeeze on top of it.
+   */
+  function riseIntervalNow(): number {
+    const base = cfg.riseMin + (cfg.riseStart - cfg.riseMin) * Math.exp(-state.elapsed / cfg.riseTau)
+    return Math.max(RISE_FLOOR, base * Math.pow(cfg.riseLevelFactor, state.level - 1))
+  }
+
   function tickRise(dt: number): void {
-    const scale = hasCurse('speed') ? 2 : 1
+    // `rush` stacks with the versus `speed` curse rather than replacing it.
+    const scale = (hasCurse('speed') ? 2 : 1) * (hasHazard('rush') ? 2 : 1)
     state.riseTimer -= dt * scale
     if (!riseWarned && state.riseTimer < RISE_WARNING_AT) {
       riseWarned = true
@@ -470,14 +573,56 @@ function buildGame(opts: GameOptions, save: SaveGame | null): Game {
     }
     let guard = 0
     while (state.riseTimer <= 0 && guard++ < 8 && state.phase !== 'gameover') {
-      insertGarbageRow(state.grid, miscRng)
+      insertGarbageRow(state.grid, miscRng, state.armor)
       bus.emit('rise', { rows: 1 })
-      state.riseInterval = RISE_MIN + (RISE_START - RISE_MIN) * Math.exp(-state.elapsed / RISE_TAU)
+      state.riseInterval = riseIntervalNow()
       state.riseTimer = state.riseInterval
       riseWarned = false
       updateDanger()
       checkKill()
     }
+  }
+
+  // -- hazards --------------------------------------------------------------
+
+  function updateColorsLocked(): void {
+    state.colorsLocked = cfg.stoneOnly || hasHazard('stone')
+  }
+
+  function rollHazard(): void {
+    const n = HAZARD_KINDS.length
+    // Never the same kind twice running: pick from the other kinds instead.
+    const kind =
+      lastHazard === null
+        ? HAZARD_KINDS[miscRng.int(n)]
+        : HAZARD_KINDS[(HAZARD_KINDS.indexOf(lastHazard) + 1 + miscRng.int(n - 1)) % n]
+    lastHazard = kind
+    hazards.push({ kind, remaining: HAZARD_DURATION[kind] })
+    updateColorsLocked()
+    bus.emit('hazardStart', { kind })
+  }
+
+  /** Counts down towards the next hazard; only runs while the player is playing. */
+  function tickHazardTimer(dt: number): void {
+    if (!hazardsEnabled || !Number.isFinite(state.hazardTimer)) return
+    state.hazardTimer -= dt
+    if (state.hazardTimer > 0) return
+    state.hazardTimer = cfg.hazardEvery
+    // Only ever one hazard at a time; a busy slot simply skips this roll.
+    if (hazards.length === 0) rollHazard()
+  }
+
+  function tickHazards(dt: number): void {
+    let ended = false
+    for (let i = hazards.length - 1; i >= 0; i--) {
+      const h = hazards[i]
+      h.remaining -= dt
+      if (h.remaining > 0) continue
+      hazards.splice(i, 1)
+      ended = true
+      bus.emit('hazardEnd', { kind: h.kind })
+    }
+    if (ended) updateColorsLocked()
   }
 
   // -- flight ---------------------------------------------------------------
@@ -524,6 +669,7 @@ function buildGame(opts: GameOptions, save: SaveGame | null): Game {
     state.flying = null
     bus.emit('impact', { x: px, y: py, speed })
 
+    const landedArmor = f.piece.armor ?? 0
     let aboveBoard = false
     for (let i = 0; i < cells.length; i++) {
       const cell = cells[i]
@@ -532,6 +678,7 @@ function buildGame(opts: GameOptions, save: SaveGame | null): Game {
         continue
       }
       state.grid[cell.row][cell.col] = cell.color
+      state.armor[cell.row][cell.col] = landedArmor
     }
     bus.emit('lock', { cells })
     updateDanger()
@@ -570,72 +717,126 @@ function buildGame(opts: GameOptions, save: SaveGame | null): Game {
 
   function resolveStep(): void {
     const lines = findLines(state.grid)
-    const matches = findMatches(state.grid)
+    // While colours are locked every block reads as stone: lines are the only
+    // way out. The stored colours stay put, so matching resumes untouched.
+    const matches = state.colorsLocked ? NO_MATCHES : findMatches(state.grid)
     if (lines.length === 0 && matches.length === 0) {
       finishResolution()
       return
     }
 
-    state.chain++
+    // mask 1 = the clear wants this cell, 2 = armour absorbed the hit instead.
     mask.fill(0)
-    let sumX = 0
-    let sumY = 0
-    let count = 0
     for (let i = 0; i < lines.length; i++) {
       const r = lines[i]
-      for (let c = 0; c < COLS; c++) {
-        const idx = r * COLS + c
-        if (mask[idx] !== 0) continue
-        mask[idx] = 1
-        sumX += c + 0.5
-        sumY += r + 0.5
-        count++
-      }
+      for (let c = 0; c < COLS; c++) mask[r * COLS + c] = 1
     }
     for (let i = 0; i < matches.length; i++) {
       const cells = matches[i].cells
-      for (let j = 0; j < cells.length; j++) {
-        const idx = cells[j].row * COLS + cells[j].col
-        if (mask[idx] !== 0) continue
-        mask[idx] = 1
-        sumX += cells[j].col + 0.5
-        sumY += cells[j].row + 0.5
-        count++
+      for (let j = 0; j < cells.length; j++) mask[cells[j].row * COLS + cells[j].col] = 1
+    }
+
+    let sumX = 0
+    let sumY = 0
+    let removed = 0
+    for (let r = 0; r < ROWS; r++) {
+      const armorRow = state.armor[r]
+      for (let c = 0; c < COLS; c++) {
+        const idx = r * COLS + c
+        if (mask[idx] !== 1) continue
+        if (armorRow[c] > 0) {
+          armorRow[c] -= 1
+          mask[idx] = 2
+          bus.emit('armorHit', { row: r, col: c, remaining: armorRow[c] })
+          continue
+        }
+        removed++
+        sumX += c + 0.5
+        sumY += r + 0.5
       }
     }
+
+    // Damaging armour is not progress: if nothing actually disappeared the
+    // cascade has to stop here, or an all-armoured board would resolve forever.
+    if (removed === 0) {
+      finishResolution()
+      return
+    }
+
+    state.chain++
     for (let r = 0; r < ROWS; r++) {
       const row = state.grid[r]
+      const armorRow = state.armor[r]
       for (let c = 0; c < COLS; c++) {
-        if (mask[r * COLS + c] !== 0) row[c] = null
+        if (mask[r * COLS + c] !== 1) continue
+        row[c] = null
+        armorRow[c] = 0
       }
     }
 
-    const cx = count > 0 ? sumX / count : LAUNCH_X
-    const cy = count > 0 ? sumY / count : LAUNCH_Y
+    // A line only counts once every one of its cells is gone; a match counts as
+    // soon as it lost cells, and scores only the cells it actually broke.
+    const clearedLines: number[] = []
+    for (let i = 0; i < lines.length; i++) {
+      const r = lines[i]
+      let whole = true
+      for (let c = 0; c < COLS; c++) {
+        if (mask[r * COLS + c] === 2) {
+          whole = false
+          break
+        }
+      }
+      if (whole) clearedLines.push(r)
+    }
+
+    const clearedMatches: Match[] = []
+    let matchCells = 0
+    for (let i = 0; i < matches.length; i++) {
+      const cells = matches[i].cells
+      let broke = 0
+      for (let j = 0; j < cells.length; j++) {
+        if (mask[cells[j].row * COLS + cells[j].col] === 1) broke++
+      }
+      if (broke === 0) continue
+      clearedMatches.push(matches[i])
+      matchCells += broke
+    }
+
+    const cx = sumX / removed
+    const cy = sumY / removed
 
     const chainMult = Math.min(Math.pow(2, state.chain - 1), CHAIN_MULT_CAP)
-    let raw = 0
-    for (let i = 0; i < matches.length; i++) raw += 40 * matches[i].cells.length * chainMult
-    if (lines.length > 0) raw += Math.round(120 * Math.pow(lines.length, 1.5) * chainMult)
-    const delta = Math.round(raw * (1 + state.combo * 0.1) * (1 + (state.level - 1) * 0.1))
+    let raw = 40 * matchCells * chainMult
+    if (clearedLines.length > 0) {
+      raw += Math.round(120 * Math.pow(clearedLines.length, 1.5) * chainMult)
+    }
+    const combo = 1 + state.combo * 0.1
+    const delta = Math.round(raw * combo * (1 + (state.level - 1) * 0.1) * cfg.scoreScale)
     state.score += delta
 
     clearedThisLaunch = true
-    clearsThisLaunch += lines.length + matches.length
+    clearsThisLaunch += clearedLines.length + clearedMatches.length
 
-    bus.emit('clear', { lines, matches, chain: state.chain, score: delta, cx, cy })
+    bus.emit('clear', {
+      lines: clearedLines,
+      matches: clearedMatches,
+      chain: state.chain,
+      score: delta,
+      cx,
+      cy,
+    })
     bus.emit('score', { delta, cx, cy })
     if (state.chain >= 2) bus.emit('chainStep', { chain: state.chain })
     maybeSpawnPower(cx, cy)
 
-    if (applyGravity(state.grid)) bus.emit('fall', EMPTY_PAYLOAD)
+    if (applyGravity(state.grid, state.armor)) bus.emit('fall', EMPTY_PAYLOAD)
     updateDanger()
   }
 
   function finishResolution(): void {
     state.combo = clearedThisLaunch ? state.combo + 1 : 0
     state.clearsTotal += clearsThisLaunch
-    const level = 1 + Math.floor(state.clearsTotal / CLEARS_PER_LEVEL)
+    const level = 1 + Math.floor(state.clearsTotal / cfg.clearsPerLevel)
     if (level > state.level) {
       state.level = level
       bus.emit('levelUp', { level })
@@ -645,7 +846,7 @@ function buildGame(opts: GameOptions, save: SaveGame | null): Game {
     if (checkKill()) return
 
     state.current = state.next
-    state.next = drawFrom(bag, bagRng)
+    state.next = dealPiece()
     state.flying = null
     state.phase = 'aiming'
   }
@@ -688,10 +889,14 @@ function buildGame(opts: GameOptions, save: SaveGame | null): Game {
     state.elapsed += dt
 
     if (state.activeCurses.length > 0) tickCurses(dt)
+    if (hazards.length > 0) tickHazards(dt)
     if (state.powers.length > 0) updatePowers(dt)
 
     const wasResolving = state.phase === 'resolving'
-    if (state.phase === 'aiming' || state.phase === 'flying') tickRise(dt)
+    if (state.phase === 'aiming' || state.phase === 'flying') {
+      tickHazardTimer(dt)
+      tickRise(dt)
+    }
 
     if (isOver()) return // tickRise can end the run
     if (state.phase === 'flying') advanceFlight(dt)
@@ -757,7 +962,7 @@ function buildGame(opts: GameOptions, save: SaveGame | null): Game {
 
   function addGarbage(rows: number): void {
     if (state.phase === 'gameover' || rows <= 0) return
-    for (let i = 0; i < rows; i++) insertGarbageRow(state.grid, miscRng)
+    for (let i = 0; i < rows; i++) insertGarbageRow(state.grid, miscRng, state.armor)
     bus.emit('rise', { rows })
     updateDanger()
     checkKill()
@@ -787,8 +992,16 @@ function buildGame(opts: GameOptions, save: SaveGame | null): Game {
   }
 
   function serialize(): SaveGame {
+    const savedHazards: ActiveHazard[] = []
+    for (let i = 0; i < state.hazards.length; i++) {
+      savedHazards.push({ kind: state.hazards[i].kind, remaining: state.hazards[i].remaining })
+    }
     return {
-      version: 1,
+      version: 2,
+      difficulty: state.difficulty,
+      armor: armorToFlat(state.armor),
+      hazards: savedHazards,
+      hazardTimer: state.hazardTimer,
       grid: gridToFlat(state.grid),
       current: clonePiece(state.current),
       next: clonePiece(state.next),

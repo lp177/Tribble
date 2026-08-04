@@ -27,6 +27,23 @@ export function cloneGrid(grid: Grid): Grid {
   return out
 }
 
+/** Armour layer parallel to a grid; 0 = a normal block (or an empty cell). */
+export function emptyArmor(): number[][] {
+  const armor: number[][] = []
+  for (let r = 0; r < ROWS; r++) {
+    const row = new Array<number>(COLS)
+    for (let c = 0; c < COLS; c++) row[c] = 0
+    armor.push(row)
+  }
+  return armor
+}
+
+export function cloneArmor(armor: number[][]): number[][] {
+  const out: number[][] = []
+  for (let r = 0; r < ROWS; r++) out.push(armor[r].slice())
+  return out
+}
+
 /**
  * Side walls, floor and occupied cells collide. Rows above the board (row < 0)
  * are simply out of play, and the launcher-zone rows are ordinary free space.
@@ -102,8 +119,11 @@ function pushNeighbor(grid: Grid, r: number, c: number, color: CellColor, top: n
   return top + 1
 }
 
-/** Puyo-style per-cell gravity: every block drops to the lowest free cell. */
-export function applyGravity(grid: Grid): boolean {
+/**
+ * Puyo-style per-cell gravity: every block drops to the lowest free cell.
+ * When an armour layer is passed it travels with the blocks, cell for cell.
+ */
+export function applyGravity(grid: Grid, armor?: number[][]): boolean {
   let moved = false
   for (let c = 0; c < COLS; c++) {
     let write = ROWS - 1
@@ -113,6 +133,10 @@ export function applyGravity(grid: Grid): boolean {
       if (r !== write) {
         grid[write][c] = cell
         grid[r][c] = null
+        if (armor !== undefined) {
+          armor[write][c] = armor[r][c]
+          armor[r][c] = 0
+        }
         moved = true
       }
       write--
@@ -121,16 +145,28 @@ export function applyGravity(grid: Grid): boolean {
   return moved
 }
 
-/** Shifts everything up one row (row 0 falls off) and adds a garbage bottom row. */
-export function insertGarbageRow(grid: Grid, rng: Rng): void {
+/**
+ * Shifts everything up one row (row 0 falls off) and adds a garbage bottom row.
+ * The armour layer shifts with it; the fresh bottom row is never armoured.
+ */
+export function insertGarbageRow(grid: Grid, rng: Rng, armor?: number[][]): void {
   for (let r = 0; r < ROWS - 1; r++) {
     const dst = grid[r]
     const src = grid[r + 1]
     for (let c = 0; c < COLS; c++) dst[c] = src[c]
+    if (armor !== undefined) {
+      const adst = armor[r]
+      const asrc = armor[r + 1]
+      for (let c = 0; c < COLS; c++) adst[c] = asrc[c]
+    }
   }
 
   const bottom = grid[ROWS - 1]
   for (let c = 0; c < COLS; c++) bottom[c] = rng.int(COLOR_COUNT) as CellColor
+  if (armor !== undefined) {
+    const abottom = armor[ROWS - 1]
+    for (let c = 0; c < COLS; c++) abottom[c] = 0
+  }
 
   const holes = 2 + rng.int(2)
   let placed = 0
@@ -201,4 +237,28 @@ export function flatToGrid(flat: readonly number[]): Grid {
     grid[r][i - r * COLS] = v as CellColor
   }
   return grid
+}
+
+/** Same row-major encoding for the armour layer; negatives clamp to 0. */
+export function armorToFlat(armor: number[][]): number[] {
+  const flat: number[] = new Array<number>(ROWS * COLS)
+  for (let r = 0; r < ROWS; r++) {
+    const row = armor[r]
+    for (let c = 0; c < COLS; c++) flat[r * COLS + c] = row[c] > 0 ? row[c] : 0
+  }
+  return flat
+}
+
+export function flatToArmor(flat: readonly number[]): number[][] {
+  if (flat.length !== ROWS * COLS) {
+    throw new Error(`flatToArmor: expected ${ROWS * COLS} cells, got ${flat.length}`)
+  }
+  const armor = emptyArmor()
+  for (let i = 0; i < flat.length; i++) {
+    const v = flat[i]
+    if (!(v > 0)) continue
+    const r = (i / COLS) | 0
+    armor[r][i - r * COLS] = Math.floor(v)
+  }
+  return armor
 }

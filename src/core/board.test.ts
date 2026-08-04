@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyGravity,
+  armorToFlat,
+  cloneArmor,
   cloneGrid,
   collides,
+  emptyArmor,
   emptyGrid,
   findLines,
   findMatches,
+  flatToArmor,
   flatToGrid,
   gridToFlat,
   insertGarbageRow,
@@ -62,6 +66,28 @@ describe('emptyGrid / cloneGrid', () => {
     copy[0][5] = 2
     expect(grid[ROWS - 1][0]).toBe(0)
     expect(grid[0][5]).toBeNull()
+  })
+})
+
+describe('emptyArmor / cloneArmor', () => {
+  it('is ROWS x COLS of zeroes with independent rows', () => {
+    const armor = emptyArmor()
+    expect(armor).toHaveLength(ROWS)
+    for (const row of armor) {
+      expect(row).toHaveLength(COLS)
+      expect(row.every((v) => v === 0)).toBe(true)
+    }
+    armor[0][0] = 3
+    expect(armor[1][0]).toBe(0)
+  })
+
+  it('cloneArmor copies deeply', () => {
+    const armor = emptyArmor()
+    armor[ROWS - 1][2] = 2
+    const copy = cloneArmor(armor)
+    expect(copy).toEqual(armor)
+    copy[ROWS - 1][2] = 9
+    expect(armor[ROWS - 1][2]).toBe(2)
   })
 })
 
@@ -262,6 +288,40 @@ describe('applyGravity', () => {
     applyGravity(grid)
     expect(applyGravity(grid)).toBe(false)
   })
+
+  it('drags the armour layer along with the blocks it belongs to', () => {
+    const grid = emptyGrid()
+    const armor = emptyArmor()
+    grid[2][0] = 0
+    armor[2][0] = 1
+    grid[9][0] = 1
+    armor[9][0] = 0
+    grid[17][0] = 2
+    armor[17][0] = 2
+    grid[5][7] = 3
+    armor[5][7] = 1
+
+    expect(applyGravity(grid, armor)).toBe(true)
+    expect(armor[ROWS - 3][0]).toBe(1)
+    expect(armor[ROWS - 2][0]).toBe(0)
+    expect(armor[ROWS - 1][0]).toBe(2)
+    expect(armor[ROWS - 1][7]).toBe(1)
+    // Every vacated cell is back to unarmoured.
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (grid[r][c] === null) expect(armor[r][c]).toBe(0)
+      }
+    }
+  })
+
+  it('leaves the armour of a resting stack untouched', () => {
+    const grid = gridFrom(['0.2........', '0123012301.'])
+    const armor = emptyArmor()
+    armor[ROWS - 1][3] = 2
+    const before = cloneArmor(armor)
+    expect(applyGravity(grid, armor)).toBe(false)
+    expect(armor).toEqual(before)
+  })
 })
 
 describe('insertGarbageRow', () => {
@@ -307,6 +367,21 @@ describe('insertGarbageRow', () => {
     expect(a).toEqual(b)
     expect(a).toHaveLength(ROWS)
     expect(a[ROWS - 1]).toHaveLength(COLS)
+  })
+
+  it('shifts the armour layer up with the rows and leaves the new row bare', () => {
+    const grid = emptyGrid()
+    const armor = emptyArmor()
+    grid[7][2] = 3
+    armor[7][2] = 2
+    grid[ROWS - 1][9] = 0
+    armor[ROWS - 1][9] = 1
+
+    insertGarbageRow(grid, createRng(1), armor)
+    expect(armor[6][2]).toBe(2)
+    expect(armor[7][2]).toBe(0)
+    expect(armor[ROWS - 2][9]).toBe(1)
+    for (let c = 0; c < COLS; c++) expect(armor[ROWS - 1][c]).toBe(0)
   })
 
   it('stacks repeated insertions upward', () => {
@@ -424,5 +499,44 @@ describe('gridToFlat / flatToGrid', () => {
   it('rejects a wrong-sized payload', () => {
     expect(() => flatToGrid([1, 2, 3])).toThrow()
     expect(() => flatToGrid(new Array<number>(ROWS * COLS + 1).fill(-1))).toThrow()
+  })
+})
+
+describe('armorToFlat / flatToArmor', () => {
+  it('encodes row-major and round-trips', () => {
+    const armor = emptyArmor()
+    armor[0][0] = 1
+    armor[1][2] = 3
+    armor[ROWS - 1][COLS - 1] = 2
+    const flat = armorToFlat(armor)
+    expect(flat).toHaveLength(ROWS * COLS)
+    expect(flat[0]).toBe(1)
+    expect(flat[1]).toBe(0)
+    expect(flat[COLS + 2]).toBe(3)
+    expect(flatToArmor(flat)).toEqual(armor)
+  })
+
+  it('round-trips the bare layer and produces an independent copy', () => {
+    expect(flatToArmor(armorToFlat(emptyArmor()))).toEqual(emptyArmor())
+    const armor = emptyArmor()
+    armor[3][3] = 1
+    const restored = flatToArmor(armorToFlat(armor))
+    restored[3][3] = 7
+    expect(armor[3][3]).toBe(1)
+  })
+
+  it('clamps nonsense values to unarmoured', () => {
+    const flat = new Array<number>(ROWS * COLS).fill(0)
+    flat[0] = -4
+    flat[1] = 2.6
+    const armor = flatToArmor(flat)
+    expect(armor[0][0]).toBe(0)
+    expect(armor[0][1]).toBe(2)
+    expect(armorToFlat(armor)[0]).toBe(0)
+  })
+
+  it('rejects a wrong-sized payload', () => {
+    expect(() => flatToArmor([0, 0, 0])).toThrow()
+    expect(() => flatToArmor(new Array<number>(ROWS * COLS + 1).fill(0))).toThrow()
   })
 })

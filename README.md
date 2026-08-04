@@ -14,8 +14,15 @@ before the stack reaches your launcher.
 - **Two ways to clear** — complete a full horizontal **line** (Tetris style), or connect
   **3+ blocks of the same color** (bubble-shooter style). Cleared cells make everything above
   fall, which can trigger **chain reactions** with big multipliers.
-- **The stack rises** — a new garbage row pushes up from the bottom on a timer. The pace
-  increases over time, but ever more slowly, so the pressure ramps without becoming unfair.
+- **The stack rises** — a new garbage row pushes up from the bottom on a timer, and the pace
+  quickens with both the clock *and* your level, so playing well tightens the screws.
+- **Four difficulty tiers**, picked right on the title screen: **Chill** (no hazards, gentle
+  rise), **Normal**, **Hard** (fast rise, frequent hazards, armoured blocks) and **Hardcore** —
+  stone only, so colour matching is dead and lines are all you get, with no aim guide drawn.
+  Harder tiers score up to 2.5×.
+- **Random hazards** interrupt a solo run and change how you play for a few seconds:
+  **Stonefall** (colours go dead — clear lines), **Reinforced** (blocks need two breaks),
+  **Giants** (oversized pentominoes) and **Rush** (the stack climbs at double speed).
 - **Game feel** — screen shake, hit-stop, particles and procedural sound effects, all
   synthesized in the browser with no asset files. Honors `prefers-reduced-motion` (and a
   Settings override).

@@ -1,7 +1,54 @@
 import { describe, expect, it } from 'vitest'
 import { createRng } from './rng'
 import { makeBag, makePiece, pieceCells, rotatePiece } from './piece'
-import { COLOR_COUNT, PIECE_KINDS, type Piece, type PieceKind } from '../types'
+import {
+  BIG_PIECE_KINDS,
+  COLOR_COUNT,
+  MATCH_MIN,
+  MAX_PIECE_CELLS,
+  PIECE_KINDS,
+  SHAPES,
+  type CellColor,
+  type Piece,
+  type PieceKind,
+  type PlacedCell,
+} from '../types'
+
+const ALL_KINDS: readonly PieceKind[] = [...PIECE_KINDS, ...BIG_PIECE_KINDS]
+
+/** Size of the largest orthogonally connected same-colour group in a piece. */
+function biggestGroup(cells: PlacedCell[]): number {
+  const byKey = new Map<string, PlacedCell>()
+  for (const cell of cells) byKey.set(`${cell.row},${cell.col}`, cell)
+
+  let biggest = 0
+  const seen = new Set<string>()
+  for (const cell of cells) {
+    const key = `${cell.row},${cell.col}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    const queue: PlacedCell[] = [cell]
+    let size = 0
+    while (queue.length > 0) {
+      const cur = queue.pop() as PlacedCell
+      size++
+      const around = [
+        `${cur.row - 1},${cur.col}`,
+        `${cur.row + 1},${cur.col}`,
+        `${cur.row},${cur.col - 1}`,
+        `${cur.row},${cur.col + 1}`,
+      ]
+      for (const k of around) {
+        const n = byKey.get(k)
+        if (n === undefined || n.color !== cell.color || seen.has(k)) continue
+        seen.add(k)
+        queue.push(n)
+      }
+    }
+    if (size > biggest) biggest = size
+  }
+  return biggest
+}
 
 describe('createRng', () => {
   it('produces floats in [0, 1)', () => {
@@ -137,6 +184,42 @@ describe('makePiece', () => {
     }
     expect(seen.size).toBe(COLOR_COUNT)
   })
+
+  it('matches the shape length, pentominoes included', () => {
+    const rng = createRng(2468)
+    for (const kind of ALL_KINDS) {
+      const piece = makePiece(kind, rng)
+      const n = SHAPES[kind][0].length
+      expect(piece.colors).toHaveLength(n)
+      expect(n).toBeLessThanOrEqual(MAX_PIECE_CELLS)
+      expect(pieceCells(piece, 5.5, 5.5)).toHaveLength(n)
+    }
+  })
+
+  it('pairs the pentomino colors as [A, A, B, B, A]', () => {
+    const rng = createRng(1357)
+    for (let i = 0; i < 200; i++) {
+      const kind = BIG_PIECE_KINDS[i % BIG_PIECE_KINDS.length]
+      const c = makePiece(kind, rng).colors
+      expect(c).toHaveLength(5)
+      expect(c[0]).toBe(c[1])
+      expect(c[2]).toBe(c[3])
+      expect(c[4]).toBe(c[0])
+      expect(c[0]).not.toBe(c[2])
+    }
+  })
+
+  it('can never self-match, in any kind or rotation', () => {
+    const rng = createRng(864)
+    for (let i = 0; i < 240; i++) {
+      const kind = ALL_KINDS[i % ALL_KINDS.length]
+      let piece = makePiece(kind, rng)
+      for (let r = 0; r < 4; r++) {
+        expect(biggestGroup(pieceCells(piece, 5.5, 5.5))).toBeLessThan(MATCH_MIN)
+        piece = rotatePiece(piece, 1)
+      }
+    }
+  })
 })
 
 function makeTestPiece(kind: PieceKind): Piece {
@@ -178,6 +261,18 @@ describe('pieceCells', () => {
     }
   })
 
+  it('yields 5 distinct cells for every pentomino and rotation', () => {
+    for (const kind of BIG_PIECE_KINDS) {
+      let piece: Piece = { kind, rot: 0, colors: [0, 0, 1, 1, 0] }
+      for (let r = 0; r < 4; r++) {
+        const keys = cellKeys(piece, 5.5, 5.5)
+        expect(keys).toHaveLength(5)
+        expect(new Set(keys).size).toBe(5)
+        piece = rotatePiece(piece, 1)
+      }
+    }
+  })
+
   it('translates rigidly with the pivot', () => {
     const piece = makeTestPiece('J')
     const base = pieceCells(piece, 4.5, 6.5)
@@ -207,9 +302,17 @@ describe('rotatePiece', () => {
     expect(rotated.colors).toEqual(piece.colors)
   })
 
+  it('carries the piece armour through a rotation', () => {
+    const piece: Piece = { kind: 'T', rot: 0, colors: [1, 1, 3, 3], armor: 2 }
+    expect(rotatePiece(piece, 1).armor).toBe(2)
+    expect(rotatePiece(piece, -1).armor).toBe(2)
+    expect(rotatePiece(makeTestPiece('T'), 1).armor).toBeUndefined()
+  })
+
   it('four rotations return the original cell set, colors included', () => {
-    for (const kind of PIECE_KINDS) {
-      const piece: Piece = { kind, rot: 0, colors: [2, 2, 0, 0] }
+    for (const kind of ALL_KINDS) {
+      const colors: CellColor[] = SHAPES[kind][0].length === 5 ? [2, 2, 0, 0, 2] : [2, 2, 0, 0]
+      const piece: Piece = { kind, rot: 0, colors }
       let rotated = piece
       for (let i = 0; i < 4; i++) rotated = rotatePiece(rotated, 1)
       expect(rotated.rot).toBe(piece.rot)

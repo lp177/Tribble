@@ -30,8 +30,11 @@ export type Cell = CellColor | null
 /** grid[row][col], row 0 at the top. Dimensions always ROWS x COLS. */
 export type Grid = Cell[][]
 
-export type PieceKind = 'I' | 'O' | 'T' | 'S' | 'Z' | 'J' | 'L'
+/** The 7 tetrominoes, then the 5 pentominoes the `giant` hazard draws from. */
+export type PieceKind = 'I' | 'O' | 'T' | 'S' | 'Z' | 'J' | 'L' | 'P' | 'U' | 'W' | 'F' | 'Y'
 export type Rotation = 0 | 1 | 2 | 3
+/** Largest cell count of any piece; sizes the reusable cell buffers. */
+export const MAX_PIECE_CELLS = 5
 
 /** Integer cell offset from the piece pivot (cell units). */
 export interface CellOffset {
@@ -42,8 +45,10 @@ export interface CellOffset {
 export interface Piece {
   kind: PieceKind
   rot: Rotation
-  /** colors[i] colors the i-th cell of the shape in every rotation. */
-  colors: [CellColor, CellColor, CellColor, CellColor]
+  /** colors[i] colors the i-th cell of the shape; same length as the shape. */
+  colors: readonly CellColor[]
+  /** Armour the piece's blocks land with (0 = normal). */
+  armor?: number
 }
 
 /** A piece cell resolved to a concrete grid cell. */
@@ -70,6 +75,12 @@ const BASE_SHAPES: Record<PieceKind, CellOffset[]> = {
   Z: [{ x: -1, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 }],
   J: [{ x: -1, y: 0 }, { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }],
   L: [{ x: 1, y: 0 }, { x: 0, y: 0 }, { x: -1, y: 0 }, { x: -1, y: 1 }],
+  // Pentominoes — only the `giant` hazard deals these.
+  P: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 }, { x: 0, y: 2 }],
+  U: [{ x: -1, y: 0 }, { x: 1, y: 0 }, { x: -1, y: 1 }, { x: 0, y: 1 }, { x: 1, y: 1 }],
+  W: [{ x: -1, y: 0 }, { x: -1, y: 1 }, { x: 0, y: 1 }, { x: 0, y: 2 }, { x: 1, y: 2 }],
+  F: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: -1, y: 1 }, { x: 0, y: 1 }, { x: 0, y: 2 }],
+  Y: [{ x: 0, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 1 }, { x: 0, y: 2 }, { x: 0, y: 3 }],
 }
 
 function buildRotations(base: CellOffset[]): CellOffset[][] {
@@ -80,7 +91,10 @@ function buildRotations(base: CellOffset[]): CellOffset[][] {
   return rots
 }
 
+/** The normal bag. */
 export const PIECE_KINDS: readonly PieceKind[] = ['I', 'O', 'T', 'S', 'Z', 'J', 'L']
+/** Dealt only while the `giant` hazard is running. */
+export const BIG_PIECE_KINDS: readonly PieceKind[] = ['P', 'U', 'W', 'F', 'Y']
 
 /** SHAPES[kind][rot] -> 4 cell offsets from the pivot. */
 export const SHAPES: Record<PieceKind, ReadonlyArray<ReadonlyArray<CellOffset>>> = {
@@ -91,6 +105,11 @@ export const SHAPES: Record<PieceKind, ReadonlyArray<ReadonlyArray<CellOffset>>>
   Z: buildRotations(BASE_SHAPES.Z),
   J: buildRotations(BASE_SHAPES.J),
   L: buildRotations(BASE_SHAPES.L),
+  P: buildRotations(BASE_SHAPES.P),
+  U: buildRotations(BASE_SHAPES.U),
+  W: buildRotations(BASE_SHAPES.W),
+  F: buildRotations(BASE_SHAPES.F),
+  Y: buildRotations(BASE_SHAPES.Y),
 }
 
 export function pieceOffsets(piece: Piece): ReadonlyArray<CellOffset> {
@@ -122,13 +141,154 @@ export interface Rng {
 
 export const MATCH_MIN = 3
 export const RESOLVE_STEP = 0.22
-export const INITIAL_ROWS = 4
-export const RISE_START = 14
-export const RISE_MIN = 4.5
-export const RISE_TAU = 240
 export const RISE_WARNING_AT = 1.5
 export const CHAIN_MULT_CAP = 32
-export const CLEARS_PER_LEVEL = 8
+
+// Legacy defaults — these are the 'normal' tier's values, kept as named
+// constants because saves and tests refer to them. New code should read the
+// active DifficultyConfig instead.
+export const INITIAL_ROWS = 4
+export const RISE_START = 10
+export const RISE_MIN = 3.2
+export const RISE_TAU = 150
+export const CLEARS_PER_LEVEL = 7
+
+// ---------------------------------------------------------------------------
+// Difficulty
+// ---------------------------------------------------------------------------
+
+export type Difficulty = 'chill' | 'normal' | 'hard' | 'hardcore'
+
+export interface DifficultyConfig {
+  id: Difficulty
+  label: string
+  blurb: string
+  /** Seconds between rises at the start of a run. */
+  riseStart: number
+  /** Floor the rise interval decays towards. */
+  riseMin: number
+  /** Decay time constant, seconds. Smaller = the squeeze arrives sooner. */
+  riseTau: number
+  /** Extra multiplier applied to the rise interval per level above 1. */
+  riseLevelFactor: number
+  initialRows: number
+  clearsPerLevel: number
+  /** Seconds between random hazards; 0 disables them entirely. */
+  hazardEvery: number
+  /** Colour matching is permanently off — every block reads as stone. */
+  stoneOnly: boolean
+  /** Whether the aim guide is drawn at all. */
+  aimGuide: boolean
+  /** Chance a locked piece lands armoured, outside the `armor` hazard. */
+  armorChance: number
+  /** Score multiplier, so the harder tiers are worth playing. */
+  scoreScale: number
+}
+
+export const DIFFICULTIES: Record<Difficulty, DifficultyConfig> = {
+  chill: {
+    id: 'chill',
+    label: 'Chill',
+    blurb: 'Room to breathe. No hazards, gentle rise.',
+    riseStart: 16,
+    riseMin: 6,
+    riseTau: 260,
+    riseLevelFactor: 0.99,
+    initialRows: 3,
+    clearsPerLevel: 10,
+    hazardEvery: 0,
+    stoneOnly: false,
+    aimGuide: true,
+    armorChance: 0,
+    scoreScale: 0.7,
+  },
+  normal: {
+    id: 'normal',
+    label: 'Normal',
+    blurb: 'Steady squeeze with the occasional hazard.',
+    riseStart: 10,
+    riseMin: 3.2,
+    riseTau: 150,
+    riseLevelFactor: 0.965,
+    initialRows: 4,
+    clearsPerLevel: 7,
+    hazardEvery: 45,
+    stoneOnly: false,
+    aimGuide: true,
+    armorChance: 0.06,
+    scoreScale: 1,
+  },
+  hard: {
+    id: 'hard',
+    label: 'Hard',
+    blurb: 'Fast rise, frequent hazards, armoured blocks.',
+    riseStart: 7,
+    riseMin: 2.2,
+    riseTau: 100,
+    riseLevelFactor: 0.95,
+    initialRows: 5,
+    clearsPerLevel: 6,
+    hazardEvery: 30,
+    stoneOnly: false,
+    aimGuide: true,
+    armorChance: 0.12,
+    scoreScale: 1.5,
+  },
+  hardcore: {
+    id: 'hardcore',
+    label: 'Hardcore',
+    blurb: 'Stone only — no colour matches, no aim guide. Lines are all you get.',
+    riseStart: 5.5,
+    riseMin: 1.8,
+    riseTau: 80,
+    riseLevelFactor: 0.94,
+    initialRows: 6,
+    clearsPerLevel: 5,
+    hazardEvery: 24,
+    stoneOnly: true,
+    aimGuide: false,
+    armorChance: 0.18,
+    scoreScale: 2.5,
+  },
+}
+
+export const DIFFICULTY_ORDER: readonly Difficulty[] = ['chill', 'normal', 'hard', 'hardcore']
+
+// ---------------------------------------------------------------------------
+// Hazards (random solo events)
+// ---------------------------------------------------------------------------
+
+/**
+ * `stone`  — every block reads as colourless: only line clears work.
+ * `armor`  — pieces land armoured and need an extra break.
+ * `giant`  — pentominoes instead of tetrominoes.
+ * `rush`   — the stack rises twice as fast.
+ */
+export type HazardKind = 'stone' | 'armor' | 'giant' | 'rush'
+
+export const HAZARD_KINDS: readonly HazardKind[] = ['stone', 'armor', 'giant', 'rush']
+
+export const HAZARD_DURATION: Record<HazardKind, number> = {
+  stone: 14,
+  armor: 18,
+  giant: 20,
+  rush: 12,
+}
+
+export const HAZARD_LABEL: Record<HazardKind, string> = {
+  stone: 'Stonefall — colours are dead, clear lines!',
+  armor: 'Reinforced — blocks need two breaks',
+  giant: 'Giants — oversized pieces incoming',
+  rush: 'Rush — the stack is climbing fast',
+}
+
+export interface ActiveHazard {
+  kind: HazardKind
+  remaining: number
+}
+
+/** Armour a block lands with when the `armor` hazard is running. */
+export const HAZARD_ARMOR = 1
 
 export const MAX_POWERS = 3
 export const MAX_INVENTORY = 3
@@ -191,6 +351,14 @@ export interface FlyingPiece {
 
 export interface GameState {
   grid: Grid
+  /** Parallel to `grid`: remaining extra breaks per cell, 0 for a normal block. */
+  armor: number[][]
+  difficulty: Difficulty
+  hazards: ActiveHazard[]
+  /** True while colour matching is off (hardcore, or a `stone` hazard). */
+  colorsLocked: boolean
+  /** Seconds until the next hazard rolls; Infinity when hazards are disabled. */
+  hazardTimer: number
   phase: GamePhase
   current: Piece
   next: Piece
@@ -218,6 +386,8 @@ export interface GameState {
 export interface GameOptions {
   seed: number
   versus?: boolean
+  /** Defaults to 'normal'. */
+  difficulty?: Difficulty
 }
 
 // -- Events -----------------------------------------------------------------
@@ -254,6 +424,10 @@ export interface GameEvents {
   powerLost: { id: number }
   curseApplied: { kind: CurseKind }
   curseExpired: { kind: CurseKind }
+  hazardStart: { kind: HazardKind }
+  hazardEnd: { kind: HazardKind }
+  /** An armoured block absorbed a clear instead of breaking. */
+  armorHit: { row: number; col: number; remaining: number }
 }
 
 export type GameEventName = keyof GameEvents
@@ -290,7 +464,12 @@ export interface Game {
 // ---------------------------------------------------------------------------
 
 export interface SaveGame {
-  version: 1
+  version: 2
+  difficulty: Difficulty
+  /** Flat, row-major, parallel to `grid`. */
+  armor: number[]
+  hazards: ActiveHazard[]
+  hazardTimer: number
   grid: Array<number>
   current: Piece
   next: Piece
@@ -336,6 +515,7 @@ export interface Settings {
   musicVolume: number
   reducedMotion: 'auto' | 'on' | 'off'
   playerName: string
+  difficulty: Difficulty
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -346,6 +526,7 @@ export const DEFAULT_SETTINGS: Settings = {
   musicVolume: 0.6,
   reducedMotion: 'auto',
   playerName: 'Player',
+  difficulty: 'normal',
 }
 
 // ---------------------------------------------------------------------------
@@ -470,6 +651,9 @@ export interface RenderOptions {
   fogged: boolean
   reducedMotion: boolean
 }
+
+/** Colour index the renderer paints blocks with while colours are locked. */
+export const STONE_HEX = '#7b8394'
 
 export interface RendererDeps {
   canvas: HTMLCanvasElement

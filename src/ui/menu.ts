@@ -3,6 +3,9 @@
 
 import {
   DEFAULT_BINDINGS,
+  DIFFICULTIES,
+  DIFFICULTY_ORDER,
+  type Difficulty,
   type GameAction,
   type GameOverData,
   type KeyBindings,
@@ -104,6 +107,11 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node
 }
 
+/** Stored settings can predate a tier (or be hand-edited); fall back to normal. */
+function normalizeDifficulty(d: Difficulty): Difficulty {
+  return DIFFICULTY_ORDER.includes(d) ? d : 'normal'
+}
+
 function cloneSettings(s: Settings): Settings {
   const bindings = {} as KeyBindings
   for (const action of ACTIONS) bindings[action] = s.bindings[action].slice()
@@ -115,7 +123,14 @@ function cloneSettings(s: Settings): Settings {
     musicVolume: s.musicVolume,
     reducedMotion: s.reducedMotion,
     playerName: s.playerName,
+    difficulty: normalizeDifficulty(s.difficulty),
   }
+}
+
+/** One difficulty radiogroup; several exist and all of them stay in sync. */
+interface DifficultyPicker {
+  node: HTMLElement
+  sync(): void
 }
 
 /** An in-flight key capture, so it can be cancelled when the user walks away. */
@@ -224,6 +239,9 @@ export function createMenu(
     const nodes = host.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
     for (const n of nodes) {
       if (n.hidden) continue
+      // Roving-tabindex members (the unselected difficulty options) are not tab
+      // stops, so the trap must not count them either.
+      if (n.tabIndex < 0) continue
       if (n.getClientRects().length === 0) continue
       out.push(n)
     }
@@ -232,6 +250,84 @@ export function createMenu(
 
   function emitSettings(): void {
     cb.onSettingsChanged(cloneSettings(current))
+  }
+
+  // -- Difficulty picker ----------------------------------------------------
+
+  const difficultyPickers: DifficultyPicker[] = []
+
+  function syncDifficulty(): void {
+    for (const picker of difficultyPickers) picker.sync()
+  }
+
+  function chooseDifficulty(id: Difficulty): void {
+    if (current.difficulty === id) return
+    current.difficulty = id
+    syncDifficulty()
+    emitSettings()
+  }
+
+  /**
+   * A radiogroup of difficulty cards (label + blurb). Standard radio keyboard
+   * model: one tab stop, arrows move the selection, Home/End jump to the ends.
+   */
+  function difficultyGroup(idPrefix: string): DifficultyPicker {
+    const group = el('div', 'difficulty-group')
+    const heading = el('h3', 'group-title', 'Difficulty')
+    heading.id = `${idPrefix}-difficulty-label`
+    const list = el('div', 'difficulty-picker')
+    list.setAttribute('role', 'radiogroup')
+    list.setAttribute('aria-labelledby', heading.id)
+    const options = new Map<Difficulty, HTMLButtonElement>()
+
+    for (const id of DIFFICULTY_ORDER) {
+      const config = DIFFICULTIES[id]
+      const opt = el('button', 'difficulty-option')
+      opt.type = 'button'
+      opt.id = `${idPrefix}-difficulty-${id}`
+      opt.dataset.difficulty = id
+      opt.setAttribute('role', 'radio')
+      opt.setAttribute('aria-checked', 'false')
+      opt.tabIndex = -1
+      opt.append(
+        el('span', 'difficulty-name', config.label),
+        el('span', 'difficulty-blurb', config.blurb),
+      )
+      attachInteractions(opt)
+      opt.addEventListener('click', () => chooseDifficulty(id))
+      opt.addEventListener('keydown', (e) => {
+        const at = DIFFICULTY_ORDER.indexOf(id)
+        const last = DIFFICULTY_ORDER.length - 1
+        let to = -1
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') to = at === last ? 0 : at + 1
+        else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') to = at === 0 ? last : at - 1
+        else if (e.key === 'Home') to = 0
+        else if (e.key === 'End') to = last
+        if (to < 0) return
+        // Arrows belong to the group, not to the screen behind it.
+        e.preventDefault()
+        e.stopPropagation()
+        const next = DIFFICULTY_ORDER[to]
+        chooseDifficulty(next)
+        const target = options.get(next)
+        if (target !== undefined) target.focus()
+      })
+      options.set(id, opt)
+      list.appendChild(opt)
+    }
+
+    group.append(heading, list)
+    return {
+      node: group,
+      sync(): void {
+        for (const [id, opt] of options) {
+          const on = id === current.difficulty
+          opt.setAttribute('aria-checked', on ? 'true' : 'false')
+          opt.classList.toggle('is-selected', on)
+          opt.tabIndex = on ? 0 : -1
+        }
+      },
+    }
   }
 
   // -- Title ----------------------------------------------------------------
@@ -248,9 +344,15 @@ export function createMenu(
   const titleMenu = el('nav', 'title-menu')
   titleMenu.setAttribute('aria-label', 'Main menu')
 
+  const titleDifficulty = difficultyGroup('title')
+  difficultyPickers.push(titleDifficulty)
+
   const resumeBtn = button('Resume run', 'filled', () => cb.onResume(), 'btn--lg btn--block')
   resumeBtn.hidden = true
+  // The picker sits above the menu, but the run buttons still take first focus.
+  resumeBtn.dataset.initialFocus = ''
   const newGameBtn = button('New game', 'filled', () => cb.onNewGame(), 'btn--lg btn--block')
+  newGameBtn.dataset.initialFocus = ''
   const versusBtn = button('Versus', 'tonal', () => cb.onOpenVersus(), 'btn--block')
   const howtoBtn = button(
     'How to play',
@@ -274,6 +376,7 @@ export function createMenu(
   titleCard.append(
     wordmark,
     tagline,
+    titleDifficulty.node,
     titleMenu,
     el('p', 'title-foot', 'Clear full lines — or connect 3+ blocks of the same colour.'),
   )
@@ -343,6 +446,14 @@ export function createMenu(
     (v) => {
       current.musicVolume = v
     },
+  )
+
+  const settingsDifficulty = difficultyGroup('set')
+  difficultyPickers.push(settingsDifficulty)
+  const difficultyGroupBox = el('div', 'settings-group')
+  difficultyGroupBox.append(
+    settingsDifficulty.node,
+    el('p', 'card-sub', 'Applies to the next new game — a run in progress keeps the tier it started on.'),
   )
 
   const audioGroup = el('div', 'settings-group')
@@ -497,7 +608,15 @@ export function createMenu(
   const settingsBackBtn = button('Back', 'filled', () => goBack())
   settingsActions.append(settingsBackBtn)
 
-  settingsBody.append(audioGroup, el('hr', 'divider'), generalGroup, el('hr', 'divider'), bindGroup)
+  settingsBody.append(
+    difficultyGroupBox,
+    el('hr', 'divider'),
+    audioGroup,
+    el('hr', 'divider'),
+    generalGroup,
+    el('hr', 'divider'),
+    bindGroup,
+  )
   settingsCard.append(settingsHeading, settingsBody, settingsActions)
   settingsScreen.appendChild(settingsCard)
 
@@ -518,16 +637,45 @@ export function createMenu(
     ['🎨', 'Or connect 3 or more blocks of the same colour — they pop, bubble-shooter style.'],
     ['⛓️', 'Blocks fall after a clear: trigger a new clear and you score a chain (×2 per step).'],
     ['⬆️', 'The stack keeps rising from the bottom. If it reaches the launcher zone, you lose.'],
+    ['🛡️', 'Armoured blocks crack instead of clearing: they need more than one break.'],
     ['🔮', 'In versus, clears spawn power bubbles — catch one with your flying piece to store it.'],
     ['💀', 'Send stored curses to your opponent: garbage 🧱, speed ⚡, fog 🌫️, scramble 🎲, mirror 🪞, rotation lock 🔒.'],
   ]
-  for (const [emoji, text] of HOWTO) {
-    const li = el('li')
-    const icon = el('span', 'howto-emoji', emoji)
-    icon.setAttribute('aria-hidden', 'true')
-    li.append(icon, el('span', undefined, text))
-    howtoList.appendChild(li)
+
+  /** Random events that run for a few seconds; the HUD calls out the active one. */
+  const HAZARDS_HELP: ReadonlyArray<readonly [string, string]> = [
+    ['🪨', 'Stone — every block turns to stone: colours are dead, only full lines clear.'],
+    ['🛡️', 'Reinforced — the pieces you land arrive armoured and take two breaks.'],
+    ['🧩', 'Giants — oversized five-cell pieces instead of the usual four.'],
+    ['⏩', 'Rush — the stack climbs twice as fast until it passes.'],
+  ]
+
+  function fillHowtoList(host: HTMLElement, rows: ReadonlyArray<readonly [string, string]>): void {
+    for (const [emoji, text] of rows) {
+      const li = el('li')
+      const icon = el('span', 'howto-emoji', emoji)
+      icon.setAttribute('aria-hidden', 'true')
+      li.append(icon, el('span', undefined, text))
+      host.appendChild(li)
+    }
   }
+
+  fillHowtoList(howtoList, HOWTO)
+
+  const howtoTiers = el('ul', 'howto-tiers')
+  for (const id of DIFFICULTY_ORDER) {
+    const config = DIFFICULTIES[id]
+    const li = el('li', 'howto-tier')
+    li.dataset.difficulty = id
+    li.append(
+      el('span', 'howto-tier-name', config.label),
+      el('span', 'howto-tier-blurb', config.blurb),
+    )
+    howtoTiers.appendChild(li)
+  }
+
+  const howtoHazards = el('ul', 'howto-list')
+  fillHowtoList(howtoHazards, HAZARDS_HELP)
 
   const howtoKeys = el('div', 'howto-keys')
   const howtoKeyNodes = new Map<GameAction, HTMLElement>()
@@ -557,6 +705,22 @@ export function createMenu(
   howtoActions.append(button('Back', 'filled', () => goBack()))
   howtoBody.append(
     howtoList,
+    el('hr', 'divider'),
+    el('h3', 'group-title', 'Difficulty'),
+    el(
+      'p',
+      'card-sub',
+      'Pick a tier on the title screen. It sets how fast the stack rises, how often hazards strike and how much armour you meet — and it scales your score.',
+    ),
+    howtoTiers,
+    el('hr', 'divider'),
+    el('h3', 'group-title', 'Hazards'),
+    el(
+      'p',
+      'card-sub',
+      'From Normal upwards, a random hazard takes over for a few seconds. The HUD names the one that is running and counts it down.',
+    ),
+    howtoHazards,
     el('hr', 'divider'),
     el('h3', 'group-title', 'Controls'),
     howtoKeys,
@@ -738,7 +902,7 @@ export function createMenu(
       rematchBtn.disabled = data.result === 'disconnect'
     }
     if (screen === 'howto') renderHowtoKeys()
-    if (screen === 'settings') syncControls()
+    if (screen === 'settings' || screen === 'title') syncControls()
 
     for (const [name, node] of screens) node.hidden = name !== screen
     visible = screen
@@ -746,7 +910,15 @@ export function createMenu(
     const host = screens.get(screen)
     if (host === undefined) return
     const items = focusables(host)
-    if (items.length > 0) items[0].focus()
+    if (items.length === 0) return
+    let target = items[0]
+    for (const node of items) {
+      if (node.dataset.initialFocus !== undefined) {
+        target = node
+        break
+      }
+    }
+    target.focus()
   }
 
   function hideAll(): void {
@@ -775,6 +947,7 @@ export function createMenu(
     musicSlider.sync()
     motionSelect.value = current.reducedMotion
     nameInput.value = current.playerName
+    syncDifficulty()
     renderAllBindKeys()
   }
 

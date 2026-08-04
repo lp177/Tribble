@@ -3,17 +3,22 @@
 
 import {
   COLS,
+  HAZARD_DURATION,
+  HAZARD_LABEL,
   LAUNCH_X,
   LAUNCH_Y,
   ROWS,
+  STONE_HEX,
   TOP_KILL_ROW,
   pieceOffsets,
+  type ActiveHazard,
   type AimPoint,
   type BoardMetrics,
   type CurseKind,
   type FlyingPiece,
   type GameState,
   type Grid,
+  type HazardKind,
   type OpponentView,
   type Piece,
   type PowerBubble,
@@ -21,7 +26,7 @@ import {
   type Renderer,
   type RendererDeps,
 } from '../types'
-import { BG_COLOR, POWER_COLOR, UI_FONT, drawBlock } from './theme'
+import { BG_COLOR, POWER_COLOR, UI_FONT, drawArmor, drawBlock } from './theme'
 
 const TAU = Math.PI * 2
 
@@ -41,6 +46,26 @@ const CURSE_GLYPH: Record<CurseKind, string> = {
   mirror: '🪞',
   lockRotate: '🔒',
 }
+
+// -- Hazard banner -----------------------------------------------------------
+
+const HAZARD_ACCENT: Record<HazardKind, string> = {
+  stone: '#9aa3b6',
+  armor: '#9ab4e6',
+  giant: '#ffab5e',
+  rush: '#ff5c8a',
+}
+
+/** Never eat more of the play area than this, however many hazards overlap. */
+const MAX_HAZARD_BANNERS = 3
+const HAZARD_FADE_IN = 0.3
+const HAZARD_FADE_OUT = 0.6
+/**
+ * The banner is an intro callout, not a status readout: it sits in the lane
+ * pieces fly through, and the HUD already carries the label and countdown for
+ * the whole hazard. So announce, then get out of the way.
+ */
+const HAZARD_BANNER_HOLD = 2.6
 
 // -- Static star field (normalized coords, three parallax layers) ------------
 
@@ -111,6 +136,7 @@ export function createRenderer(deps: RendererDeps): Renderer {
   let fontName = ''
   let fontScore = ''
   let fontKo = ''
+  let fontHazard = ''
 
   let nameSource = ''
   let nameShown = ''
@@ -221,6 +247,7 @@ export function createRenderer(deps: RendererDeps): Renderer {
     fontName = `600 ${Math.round(Math.max(10, sideW * 0.11))}px ${UI_FONT}`
     fontScore = `700 ${Math.round(Math.max(11, sideW * 0.145))}px ${UI_FONT}`
     fontKo = `800 ${Math.round(Math.max(14, sideW * 0.24))}px ${UI_FONT}`
+    fontHazard = `700 ${Math.round(Math.max(9, cell * 0.34))}px ${UI_FONT}`
     nameSource = ''
   }
 
@@ -267,7 +294,8 @@ export function createRenderer(deps: RendererDeps): Renderer {
 
   // -- Board ----------------------------------------------------------------
 
-  function drawBoardFrame(): void {
+  /** `locked` = colours are dead: the frame goes cold grey, deliberately. */
+  function drawBoardFrame(locked: boolean): void {
     const c = metrics.cellSize
     const ox = metrics.originX
     const oy = metrics.originY
@@ -278,14 +306,19 @@ export function createRenderer(deps: RendererDeps): Renderer {
 
     ctx.beginPath()
     ctx.roundRect(ox - pad, oy - pad, w + pad * 2, h + pad * 2, radius)
-    ctx.fillStyle = 'rgba(7,7,13,0.94)'
+    ctx.fillStyle = locked ? 'rgba(10,11,16,0.95)' : 'rgba(7,7,13,0.94)'
     ctx.fill()
 
     ctx.fillStyle = 'rgba(255,255,255,0.022)'
     ctx.fillRect(ox, oy, w, c * TOP_KILL_ROW)
 
+    if (locked) {
+      ctx.fillStyle = 'rgba(104,112,132,0.05)'
+      ctx.fillRect(ox, oy, w, h)
+    }
+
     ctx.lineWidth = 1
-    ctx.strokeStyle = 'rgba(180,200,255,0.05)'
+    ctx.strokeStyle = locked ? 'rgba(206,212,228,0.05)' : 'rgba(180,200,255,0.05)'
     ctx.beginPath()
     for (let i = 1; i < COLS; i++) {
       const x = Math.round(ox + i * c) + 0.5
@@ -295,7 +328,7 @@ export function createRenderer(deps: RendererDeps): Renderer {
     ctx.stroke()
 
     ctx.lineWidth = Math.max(1.5, c * 0.09)
-    ctx.strokeStyle = 'rgba(122,146,214,0.34)'
+    ctx.strokeStyle = locked ? 'rgba(142,150,170,0.38)' : 'rgba(122,146,214,0.34)'
     ctx.beginPath()
     ctx.roundRect(ox - pad, oy - pad, w + pad * 2, h + pad * 2, radius)
     ctx.stroke()
@@ -338,18 +371,24 @@ export function createRenderer(deps: RendererDeps): Renderer {
     ctx.lineDashOffset = 0
   }
 
-  function drawCells(grid: Grid): void {
+  function drawCells(grid: Grid, armor: number[][] | undefined, override: string | undefined): void {
     const c = metrics.cellSize
     const ox = metrics.originX
     const oy = metrics.originY
     for (let r = 0; r < ROWS; r++) {
       const row = grid[r]
       if (!row) continue
+      const arow = armor ? armor[r] : undefined
       const py = oy + r * c
       for (let col = 0; col < COLS; col++) {
         const v = row[col]
         if (v === null || v === undefined) continue
-        drawBlock(ctx, ox + col * c, py, c, v)
+        const px = ox + col * c
+        drawBlock(ctx, px, py, c, v, 1, override)
+        if (arow !== undefined) {
+          const a = arow[col]
+          if (a !== undefined && a > 0) drawArmor(ctx, px, py, c, a)
+        }
       }
     }
   }
@@ -457,27 +496,36 @@ export function createRenderer(deps: RendererDeps): Renderer {
 
   // -- Pieces ---------------------------------------------------------------
 
-  function drawPieceAt(cx: number, cy: number, piece: Piece, scale: number, alpha: number): void {
+  function drawPieceAt(
+    cx: number,
+    cy: number,
+    piece: Piece,
+    scale: number,
+    alpha: number,
+    override: string | undefined,
+  ): void {
     const offs = pieceOffsets(piece)
     const c = metrics.cellSize
     const size = c * scale
     const half = size / 2
     const ox = metrics.originX
     const oy = metrics.originY
+    const armor = piece.armor ?? 0
     for (let i = 0; i < offs.length; i++) {
       const o = offs[i]
-      drawBlock(
-        ctx,
-        ox + (cx + o.x * scale) * c - half,
-        oy + (cy + o.y * scale) * c - half,
-        size,
-        piece.colors[i],
-        alpha,
-      )
+      const px = ox + (cx + o.x * scale) * c - half
+      const py = oy + (cy + o.y * scale) * c - half
+      drawBlock(ctx, px, py, size, piece.colors[i], alpha, override)
+      if (armor > 0) drawArmor(ctx, px, py, size, armor, alpha)
     }
   }
 
-  function drawLauncher(state: GameState, t: number, reduced: boolean): void {
+  function drawLauncher(
+    state: GameState,
+    t: number,
+    reduced: boolean,
+    override: string | undefined,
+  ): void {
     const c = metrics.cellSize
     const px = metrics.originX + LAUNCH_X * c
     const py = metrics.originY + LAUNCH_Y * c
@@ -514,11 +562,17 @@ export function createRenderer(deps: RendererDeps): Renderer {
     ctx.strokeStyle = armed ? 'rgba(146,196,255,0.85)' : 'rgba(120,138,188,0.45)'
     ctx.stroke()
 
-    if (armed) drawPieceCentered(LAUNCH_X, LAUNCH_Y, state.current, 0.44)
+    if (armed) drawPieceCentered(LAUNCH_X, LAUNCH_Y, state.current, 0.44, override)
   }
 
   /** Same as drawPieceAt but centered on the shape's bounding box, not its pivot. */
-  function drawPieceCentered(cx: number, cy: number, piece: Piece, scale: number): void {
+  function drawPieceCentered(
+    cx: number,
+    cy: number,
+    piece: Piece,
+    scale: number,
+    override: string | undefined,
+  ): void {
     const offs = pieceOffsets(piece)
     let minX = Infinity
     let maxX = -Infinity
@@ -537,11 +591,12 @@ export function createRenderer(deps: RendererDeps): Renderer {
       piece,
       scale,
       1,
+      override,
     )
   }
 
-  function drawFlying(f: FlyingPiece): void {
-    drawPieceAt(f.x, f.y, f.piece, 1, 1)
+  function drawFlying(f: FlyingPiece, override: string | undefined): void {
+    drawPieceAt(f.x, f.y, f.piece, 1, 1, override)
   }
 
   // -- Powers / overlays ----------------------------------------------------
@@ -592,6 +647,98 @@ export function createRenderer(deps: RendererDeps): Renderer {
       metrics.width + c * 0.36,
       metrics.height + c * 0.36,
     )
+  }
+
+  /**
+   * Active-hazard announcement: a translucent slab just below the kill line,
+   * with the label and a countdown bar. It sits above the stack and below the
+   * launcher, so it never hides the launcher nor the lane being aimed into, and
+   * it stays translucent enough to read the board through.
+   */
+  function drawHazardBanner(hazards: ActiveHazard[], reduced: boolean): void {
+    const c = metrics.cellSize
+    const padX = c * 0.34
+    const x = metrics.originX + padX
+    const bw = metrics.width - padX * 2
+    const bh = c * 0.86
+    const gapY = c * 0.14
+    if (bw <= c || bh <= 4) return
+
+    let y = metrics.originY + TOP_KILL_ROW * c + c * 0.36
+    const n = Math.min(hazards.length, MAX_HAZARD_BANNERS)
+    const prevAlpha = ctx.globalAlpha
+
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.font = fontHazard
+
+    for (let i = 0; i < n; i++) {
+      const hz = hazards[i]
+      const total = HAZARD_DURATION[hz.kind]
+      const shown = total - hz.remaining
+      const leaving = HAZARD_BANNER_HOLD - shown
+      const alpha = reduced
+        ? shown < HAZARD_BANNER_HOLD
+          ? 1
+          : 0
+        : Math.max(
+            0,
+            Math.min(1, shown / HAZARD_FADE_IN, hz.remaining / HAZARD_FADE_OUT, leaving / 0.5),
+          )
+      if (alpha <= 0.01) {
+        y += bh + gapY
+        continue
+      }
+      const accent = HAZARD_ACCENT[hz.kind]
+
+      ctx.globalAlpha = prevAlpha * alpha
+      ctx.beginPath()
+      ctx.roundRect(x, y, bw, bh, bh * 0.3)
+      ctx.fillStyle = 'rgba(8,9,17,0.82)'
+      ctx.fill()
+      ctx.lineWidth = Math.max(1, c * 0.045)
+      ctx.strokeStyle = accent
+      ctx.globalAlpha = prevAlpha * alpha * 0.5
+      ctx.stroke()
+
+      ctx.globalAlpha = prevAlpha * alpha
+      const label = HAZARD_LABEL[hz.kind]
+      const maxTextW = bw - c * 0.5
+      const textW = ctx.measureText(label).width
+      const ty = y + bh * 0.4
+      ctx.fillStyle = '#eaf0ff'
+      if (textW > maxTextW && textW > 0) {
+        // Squeeze rather than clip: the whole warning must stay readable.
+        ctx.save()
+        ctx.translate(x + bw / 2, ty)
+        ctx.scale(maxTextW / textW, 1)
+        ctx.fillText(label, 0, 0)
+        ctx.restore()
+      } else {
+        ctx.fillText(label, x + bw / 2, ty)
+      }
+
+      // Countdown: remaining / total, drained left to right.
+      const barH = Math.max(2, c * 0.07)
+      const barX = x + c * 0.24
+      const barW = bw - c * 0.48
+      const barY = y + bh - barH - bh * 0.16
+      ctx.beginPath()
+      ctx.roundRect(barX, barY, barW, barH, barH / 2)
+      ctx.fillStyle = 'rgba(226,234,255,0.14)'
+      ctx.fill()
+      const frac = Math.max(0, Math.min(1, hz.remaining / total))
+      if (frac > 0) {
+        ctx.beginPath()
+        ctx.roundRect(barX, barY, Math.max(barH, barW * frac), barH, barH / 2)
+        ctx.fillStyle = accent
+        ctx.fill()
+      }
+
+      y += bh + gapY
+    }
+
+    ctx.globalAlpha = prevAlpha
   }
 
   function drawDangerVignette(t: number, reduced: boolean): void {
@@ -776,13 +923,18 @@ export function createRenderer(deps: RendererDeps): Renderer {
     ctx.rotate(juice.rotation)
     ctx.translate(-bcx, -bcy)
 
-    drawBoardFrame()
+    // Colour lock (hardcore, or a running `stone` hazard) repaints every block
+    // as stone; the board itself goes cold so it reads as intentional.
+    const stone = state.colorsLocked ? STONE_HEX : undefined
+
+    drawBoardFrame(stone !== undefined)
     drawKillLine(state.danger, t, reduced)
-    drawCells(state.grid)
+    drawCells(state.grid, state.armor, stone)
     if (opts.aimPath) drawAimPath(opts.aimPath, t, reduced)
-    drawLauncher(state, t, reduced)
-    if (state.flying) drawFlying(state.flying)
+    drawLauncher(state, t, reduced, stone)
+    if (state.flying) drawFlying(state.flying, stone)
     if (state.powers.length > 0) drawPowers(state.powers, t, reduced)
+    if (state.hazards && state.hazards.length > 0) drawHazardBanner(state.hazards, reduced)
     if (state.phase === 'gameover') dimBoard()
     if (opts.fogged) drawFog()
     if (state.danger) drawDangerVignette(t, reduced)
