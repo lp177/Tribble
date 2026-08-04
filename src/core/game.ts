@@ -56,15 +56,15 @@ import { createRng } from './rng'
 
 /** Decorrelates the garbage/power stream from the piece stream (see DESIGN.md). */
 const MISC_SEED_XOR = 0x9e3779b9
-/** A flight substep never travels further than this, so nothing tunnels. */
+/** Sampling granularity for power-bubble catches along a flight (cell units). */
 const MAX_SUBSTEP_CELLS = 0.25
 const WALL_EPS = 1e-6
 const TIME_EPS = 1e-9
-/** Bisections used to pin the exact contact point; makes the sim step-size independent. */
-const REFINE_ITERATIONS = 20
+const MAX_DDA_STEPS = 4096
 const LOCK_SEARCH_STEPS = 40
 const LOCK_LATERAL = [0, -1, 1, -2, 2] as const
-const AIM_MAX_STEPS = 1200
+/** Simulated seconds of flight the aim preview is allowed to look ahead. */
+const AIM_MAX_TIME = 8
 const EMPTY_PAYLOAD: Record<string, never> = {}
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -130,6 +130,12 @@ interface Mover {
   vy: number
 }
 
+/** The last grid cell a mover's pivot legally occupied; the snap target. */
+interface Track {
+  col: number
+  row: number
+}
+
 function makeScratch(): PlacedCell[] {
   return [
     { row: 0, col: 0, color: 0 },
@@ -167,66 +173,88 @@ function pieceXBounds(piece: Piece, out: { lo: number; hi: number }): void {
   out.hi = COLS - maxX - WALL_EPS
 }
 
-function refineContact(grid: Grid, m: Mover, hx: number, hy: number, scratch: PlacedCell[]): void {
-  const x0 = m.x
-  const y0 = m.y
-  let lo = 0
-  let hi = 1
-  for (let i = 0; i < REFINE_ITERATIONS; i++) {
-    const mid = (lo + hi) * 0.5
-    const mx = x0 + (hx - x0) * mid
-    const my = y0 + (hy - y0) * mid
-    if (collides(grid, fillCells(scratch, m.piece, mx, my))) hi = mid
-    else lo = mid
+/** Time until `p` crosses the next integer boundary; always > 0. */
+function nextCross(p: number, v: number): number {
+  if (v > 0) return (Math.floor(p) + 1 - p) / v
+  if (v < 0) {
+    const f = Math.floor(p)
+    return ((f < p ? f : p - 1) - p) / v
   }
-  m.x = x0 + (hx - x0) * lo
-  m.y = y0 + (hy - y0) * lo
+  return Infinity
 }
 
 /**
- * Advances a mover by dt, reflecting off the side walls at the exact crossing
- * point. Returns true on impact, leaving the mover at the refined last free
- * position.
+ * Advances a mover by dt.
+ *
+ * Piece offsets are integers, so the cells a piece covers change only when its
+ * pivot crosses an integer x or y. Stepping exactly from crossing to crossing
+ * (and testing the middle of each interval, where the covered cells are
+ * unambiguous) makes collisions exact and independent of the frame rate, which
+ * is what lets the aim preview predict a real launch. `maxCells` only caps how
+ * far a single interval advances, for callers that want finer sampling; it
+ * never changes which cells are tested.
+ *
+ * Returns true on impact, leaving the mover on the boundary it could not cross
+ * and `track` on the last cell it legally occupied.
  */
 function stepMover(
   grid: Grid,
   m: Mover,
+  track: Track,
   dt: number,
+  maxCells: number,
   scratch: PlacedCell[],
   onBounce: ((x: number, y: number) => void) | null,
+  onAdvance: ((x: number, y: number) => void) | null,
 ): boolean {
+  const speed = Math.hypot(m.vx, m.vy)
+  const maxT = speed > 0 ? maxCells / speed : Infinity
   let remaining = dt
-  for (let guard = 0; guard < 4 && remaining > TIME_EPS; guard++) {
+
+  for (let guard = 0; guard < MAX_DDA_STEPS && remaining > TIME_EPS; guard++) {
     pieceXBounds(m.piece, BOUNDS)
-    const nx = m.x + m.vx * remaining
-    const ny = m.y + m.vy * remaining
 
+    let t = remaining < maxT ? remaining : maxT
     let wall = 0
-    let t = 1
-    if (nx < BOUNDS.lo && m.vx < 0) {
-      wall = -1
-      t = (BOUNDS.lo - m.x) / (nx - m.x)
-    } else if (nx > BOUNDS.hi && m.vx > 0) {
-      wall = 1
-      t = (BOUNDS.hi - m.x) / (nx - m.x)
+    if (m.vx < 0) {
+      const tw = (BOUNDS.lo - m.x) / m.vx
+      if (tw >= 0 && tw <= t) {
+        t = tw
+        wall = -1
+      }
+    } else if (m.vx > 0) {
+      const tw = (BOUNDS.hi - m.x) / m.vx
+      if (tw >= 0 && tw <= t) {
+        t = tw
+        wall = 1
+      }
     }
-    if (wall !== 0) t = t >= 0 && t <= 1 ? t : t < 0 ? 0 : 1
-
-    const tx = wall === -1 ? BOUNDS.lo : wall === 1 ? BOUNDS.hi : nx
-    const ty = m.y + (ny - m.y) * t
-
-    if (collides(grid, fillCells(scratch, m.piece, tx, ty))) {
-      refineContact(grid, m, tx, ty, scratch)
-      return true
+    const tcx = nextCross(m.x, m.vx)
+    if (tcx < t) {
+      t = tcx
+      wall = 0
     }
+    const tcy = nextCross(m.y, m.vy)
+    if (tcy < t) {
+      t = tcy
+      wall = 0
+    }
+    if (!(t > 0)) t = 0
 
-    m.x = tx
-    m.y = ty
-    if (wall === 0) return false
+    const midX = m.x + m.vx * t * 0.5
+    const midY = m.y + m.vy * t * 0.5
+    if (collides(grid, fillCells(scratch, m.piece, midX, midY))) return true
+    track.col = Math.floor(midX)
+    track.row = Math.floor(midY)
 
-    m.vx = -m.vx
-    if (onBounce) onBounce(tx, ty)
-    remaining *= 1 - t
+    m.x += m.vx * t
+    m.y += m.vy * t
+    remaining -= t
+    if (onAdvance) onAdvance(m.x, m.y)
+    if (wall !== 0) {
+      m.vx = -m.vx
+      if (onBounce) onBounce(m.x, m.y)
+    }
   }
   return false
 }
@@ -234,22 +262,24 @@ function stepMover(
 const PLACE = { x: 0, y: 0 }
 
 /**
- * Grid-aligned resting placement for a piece stopped at (px, py): the snapped
- * pivot when it is free, otherwise the free candidate closest to the contact
- * point, searched backwards along the inverse velocity with small lateral
- * offsets. Bounded, and never returns an overlapping placement.
+ * Grid-aligned resting placement for a piece stopped at (px, py): the pivot
+ * snapped onto the last cell it occupied, or — should that be blocked, which
+ * only a mid-flight rotation can cause — the free candidate closest to the
+ * contact point, searched backwards along the inverse velocity with small
+ * lateral offsets. Bounded, and never returns an overlapping placement.
  */
 function findLockPlacement(
   grid: Grid,
   piece: Piece,
+  track: Track,
   px: number,
   py: number,
   vx: number,
   vy: number,
   scratch: PlacedCell[],
 ): void {
-  const sx = Math.floor(px) + 0.5
-  const sy = Math.floor(py) + 0.5
+  const sx = track.col + 0.5
+  const sy = track.row + 0.5
   if (!collides(grid, fillCells(scratch, piece, sx, sy))) {
     PLACE.x = sx
     PLACE.y = sy
@@ -376,8 +406,14 @@ function buildGame(opts: GameOptions, save: SaveGame | null): Game {
   let gameOverEmitted = false
   let nextPowerId = 1
 
+  const track: Track = { col: 0, row: 0 }
+
   const onBounce = (x: number, y: number): void => {
     bus.emit('bounce', { x, y })
+  }
+  const onAdvance = (): void => {
+    const f = state.flying
+    if (f && state.powers.length > 0) catchPowers(f)
   }
 
   // -- helpers --------------------------------------------------------------
