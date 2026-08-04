@@ -1,0 +1,22 @@
+{
+  "name": "tribble",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Tribble — a Tetris × bubble-shooter hybrid for the browser.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "peerjs": "^1.5.5"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.2.0",
+    "vitest": "^4.1.10"
+  }
+}
