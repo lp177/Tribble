@@ -27,7 +27,10 @@
   --on-bg: #ecebf5;
   --on-surface: #e6e5f1;
   --on-surface-variant: #a6a4bd;
-  --on-surface-faint: #75738d;
+  /* Lightened just enough to clear WCAG AA (4.5:1) on every surface it lands
+     on — including --surface-3, under the keycap gradient and the hovered
+     text input — while staying a clear step below --on-surface-variant. */
+  --on-surface-faint: #9694ae;
   --on-primary: #ffffff;
   --on-accent: #06202a;
 
@@ -1376,31 +1379,66 @@ body {
 /* Reduced motion                                                             */
 /* ------------------------------------------------------------------------- */
 
+/*
+ * Reduced motion comes from two places: the OS setting, and the in-game
+ * Settings override. main.ts resolves both into data-reduced-motion on <html>
+ * ("auto" follows the OS), so that attribute is authoritative once scripting is
+ * up. The media query still stands alone for the moments before that — but it
+ * must yield when the player has explicitly chosen to keep the motion.
+ */
+:root[data-reduced-motion='on'] *,
+:root[data-reduced-motion='on'] *::before,
+:root[data-reduced-motion='on'] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+
+:root[data-reduced-motion='on'] .ripple {
+  display: none !important;
+}
+
+:root[data-reduced-motion='on'] .wordmark,
+:root[data-reduced-motion='on'] .bind-row.is-listening,
+:root[data-reduced-motion='on'] .hud-rise.is-danger {
+  animation: none !important;
+}
+
+:root[data-reduced-motion='on'] .btn:active {
+  transform: none;
+}
+
+:root[data-reduced-motion='on'] .toast {
+  /* Keep the disappearance, drop the motion. */
+  animation: toast-fade 2.2s linear both !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  :root:not([data-reduced-motion='off']) *,
+  :root:not([data-reduced-motion='off']) *::before,
+  :root:not([data-reduced-motion='off']) *::after {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
 
-  .ripple {
+  :root:not([data-reduced-motion='off']) .ripple {
     display: none !important;
   }
 
-  .wordmark,
-  .bind-row.is-listening,
-  .hud-rise.is-danger {
+  :root:not([data-reduced-motion='off']) .wordmark,
+  :root:not([data-reduced-motion='off']) .bind-row.is-listening,
+  :root:not([data-reduced-motion='off']) .hud-rise.is-danger {
     animation: none !important;
   }
 
-  .btn:active {
+  :root:not([data-reduced-motion='off']) .btn:active {
     transform: none;
   }
 
-  .toast {
+  :root:not([data-reduced-motion='off']) .toast {
     /* Keep the disappearance, drop the motion. */
     animation: toast-fade 2.2s linear both !important;
   }

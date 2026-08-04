@@ -65,6 +65,25 @@ const NAMED_KEYS: Record<string, string> = {
 const FOCUSABLE_SELECTOR =
   'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'
 
+/** Ripple animation length in style.css, plus slack: the removal safety net. */
+const RIPPLE_FALLBACK_MS = 900
+
+let motionQuery: MediaQueryList | null = null
+
+/**
+ * True when menu animations must be suppressed: the system preference, or the
+ * app's own override if it marked the document root with one.
+ */
+function prefersReducedMotion(): boolean {
+  const rootEl = document.documentElement
+  const flag = rootEl.dataset.reducedMotion
+  if (flag === 'on' || flag === 'true') return true
+  if (flag === 'off' || flag === 'false') return false
+  if (rootEl.classList.contains('reduced-motion')) return true
+  if (motionQuery === null) motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+  return motionQuery.matches
+}
+
 function keyLabel(code: string): string {
   const named = NAMED_KEYS[code]
   if (named !== undefined) return named
@@ -99,6 +118,16 @@ function cloneSettings(s: Settings): Settings {
   }
 }
 
+/** An in-flight key capture, so it can be cancelled when the user walks away. */
+interface RebindCapture {
+  action: GameAction
+  row: HTMLButtonElement
+  /** Generation counter; a callback with a stale token is ignored. */
+  token: number
+  /** The callback handed to the input layer; null releases its one-shot. */
+  done: (code: string | null) => void
+}
+
 function isGameOverData(d: GameOverData | VersusEndData | undefined): d is GameOverData {
   return d !== undefined && 'best' in d
 }
@@ -116,8 +145,10 @@ export function createMenu(
   let visible: Screen | null = null
   /** Where Escape / Back returns from settings & how-to. */
   let origin: Screen = 'title'
-  /** True while the input layer is capturing a key for a rebind. */
-  let rebinding = false
+  /** Set while the input layer is capturing a key for a rebind. */
+  let capture: RebindCapture | null = null
+  /** Bumped per capture so a callback from a cancelled one is ignored. */
+  let captureToken = 0
 
   const layer = el('div', 'menu-layer')
   const screens = new Map<Screen, HTMLElement>()
@@ -125,6 +156,9 @@ export function createMenu(
   // -- helpers --------------------------------------------------------------
 
   function playRipple(host: HTMLElement, cx: number, cy: number): void {
+    // Reduced motion hides the ripple in CSS, so its animation never ends and
+    // the span would leak: don't create one at all.
+    if (prefersReducedMotion()) return
     const rect = host.getBoundingClientRect()
     const radius = Math.hypot(
       Math.max(cx, rect.width - cx),
@@ -135,7 +169,15 @@ export function createMenu(
     span.style.height = `${radius * 2}px`
     span.style.left = `${cx - radius}px`
     span.style.top = `${cy - radius}px`
-    span.addEventListener('animationend', () => span.remove())
+    // Belt and braces: if animationend never arrives (hidden tab, a CSS
+    // override, an interrupted animation), the timer still removes the node.
+    let timer = 0
+    const remove = (): void => {
+      window.clearTimeout(timer)
+      span.remove()
+    }
+    timer = window.setTimeout(remove, RIPPLE_FALLBACK_MS)
+    span.addEventListener('animationend', remove)
     host.appendChild(span)
   }
 
@@ -371,6 +413,33 @@ export function createMenu(
     for (const action of ACTIONS) renderBindKeys(action)
   }
 
+  /**
+   * Give `code` to `action` alone: any other action holding it loses it, so a
+   * key is never bound twice (an action left with none renders as unbound).
+   */
+  function assignBinding(action: GameAction, code: string): void {
+    for (const other of ACTIONS) {
+      if (other === action) continue
+      const codes = current.bindings[other]
+      const at = codes.indexOf(code)
+      if (at >= 0) codes.splice(at, 1)
+    }
+    current.bindings[action] = [code]
+    renderAllBindKeys()
+    emitSettings()
+  }
+
+  /** Drop an armed capture: restore the row and release the input one-shot. */
+  function cancelRebind(): void {
+    const active = capture
+    if (active === null) return
+    capture = null
+    active.row.classList.remove('is-listening')
+    renderBindKeys(active.action)
+    // Same path Escape takes, so the input layer stops waiting for a key.
+    active.done(null)
+  }
+
   for (const action of ACTIONS) {
     const item = el('li')
     const row = el('button', 'bind-row')
@@ -381,23 +450,25 @@ export function createMenu(
     row.append(name, keys)
     attachInteractions(row)
     row.addEventListener('click', () => {
-      if (rebinding) return
-      rebinding = true
-      row.classList.add('is-listening')
-      keys.textContent = ''
-      keys.appendChild(el('span', 'bind-hint', 'Press a key… (Esc cancels)'))
-      cb.onRebindRequest(action, (code) => {
-        rebinding = false
+      if (capture !== null) return
+      const token = ++captureToken
+      const done = (code: string | null): void => {
+        // A late answer from a capture we already cancelled must change nothing.
+        if (capture === null || capture.token !== token) return
+        capture = null
         row.classList.remove('is-listening')
         if (code !== null) {
-          current.bindings[action] = [code]
-          renderBindKeys(action)
-          emitSettings()
+          assignBinding(action, code)
         } else {
           renderBindKeys(action)
         }
         row.focus()
-      })
+      }
+      capture = { action, row, token, done }
+      row.classList.add('is-listening')
+      keys.textContent = ''
+      keys.appendChild(el('span', 'bind-hint', 'Press a key… (Esc cancels)'))
+      cb.onRebindRequest(action, done)
     })
     bindKeyNodes.set(action, keys)
     bindRowNodes.set(action, row)
@@ -652,6 +723,8 @@ export function createMenu(
   }
 
   function show(screen: Screen, data?: GameOverData | VersusEndData): void {
+    // Leaving (or re-entering) a screen never leaves a capture armed.
+    cancelRebind()
     if (screen === 'gameover' && isGameOverData(data)) {
       overScoreValue.textContent = String(Math.round(data.score))
       overBestValue.textContent = String(Math.round(data.best))
@@ -677,6 +750,7 @@ export function createMenu(
   }
 
   function hideAll(): void {
+    cancelRebind()
     for (const node of screens.values()) node.hidden = true
     visible = null
   }
@@ -704,8 +778,23 @@ export function createMenu(
     renderAllBindKeys()
   }
 
+  // Clicking anything but the listening row abandons the capture (the Back
+  // button, another row, the board…). Capture phase: it must run before the
+  // click that would arm a new one.
+  document.addEventListener(
+    'pointerdown',
+    (e) => {
+      const active = capture
+      if (active === null) return
+      const target = e.target
+      if (target instanceof Node && active.row.contains(target)) return
+      cancelRebind()
+    },
+    true,
+  )
+
   layer.addEventListener('keydown', (e) => {
-    if (visible === null || rebinding) return
+    if (visible === null || capture !== null) return
     if (e.key === 'Escape') {
       if (visible === 'settings' || visible === 'howto') {
         e.preventDefault()
@@ -759,6 +848,9 @@ export function createMenu(
     setVersusStatus,
     setVersusCode,
     refreshSettings(s: Settings): void {
+      // The settings object is being replaced; a capture aimed at the old one
+      // must not land on the new one.
+      cancelRebind()
       current = cloneSettings(s)
       syncControls()
       renderHowtoKeys()

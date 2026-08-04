@@ -20,6 +20,18 @@ function isEditable(t: EventTarget | null): boolean {
   return tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || t.isContentEditable
 }
 
+/** Controls that activate on Space/Enter, or navigate with the arrow keys. */
+function isActivatable(t: EventTarget | null): boolean {
+  if (!(t instanceof HTMLElement)) return false
+  const tag = t.tagName
+  if (tag === 'BUTTON' || tag === 'SUMMARY' || tag === 'OPTION') return true
+  if (tag === 'A' && t.hasAttribute('href')) return true
+  return t.getAttribute('role') === 'button'
+}
+
+/** Keys the browser owns while a control is focused; the game must not eat them. */
+const CONTROL_KEYS = new Set(['Space', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'])
+
 export function createInput(target: HTMLElement, bindings: KeyBindings): InputManager {
   let current = bindings
   const codeToAction = new Map<string, GameAction>()
@@ -49,6 +61,10 @@ export function createInput(target: HTMLElement, bindings: KeyBindings): InputMa
       return
     }
     if (isEditable(e.target)) return
+    // A focused button must still activate on Space: swallowing it here would
+    // make the menus mouse-only. Escape is not a control key, so pause still
+    // works from anywhere.
+    if (isActivatable(e.target) && CONTROL_KEYS.has(e.code)) return
     down.add(e.code)
     const action = codeToAction.get(e.code)
     if (action === undefined) return

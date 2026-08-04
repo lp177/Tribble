@@ -30,6 +30,7 @@ const SIDE_FRAC = 0.35
 const GAP_FRAC = 0.07
 
 const KILL_DASH: number[] = [9, 7]
+const WAIT_DASH: number[] = [6, 6]
 const NO_DASH: number[] = []
 
 const CURSE_GLYPH: Record<CurseKind, string> = {
@@ -80,6 +81,7 @@ export function createRenderer(deps: RendererDeps): Renderer {
   let dpr = 1
   let cssW = 0
   let cssH = 0
+  /** True for the whole of a versus match: the sidebar is reserved up front. */
   let hasOpponent = false
 
   const metrics: BoardMetrics = { originX: 0, originY: 0, cellSize: 0, width: 0, height: 0 }
@@ -87,6 +89,15 @@ export function createRenderer(deps: RendererDeps): Renderer {
   let sideY = 0
   let sideW = 0
   let sideH = 0
+  // Mini-board geometry inside the sidebar, baked with the layout so the live
+  // opponent view and its waiting placeholder occupy exactly the same box.
+  let sideHeaderH = 0
+  let sideCell = 0
+  let sideGx = 0
+  let sideGy = 0
+  let sideGw = 0
+  let sideGh = 0
+  let sidePad = 0
 
   // The two vignettes are baked once per layout: re-evaluating a large radial
   // gradient every frame is by far the most expensive thing this renderer does.
@@ -189,6 +200,14 @@ export function createRenderer(deps: RendererDeps): Renderer {
     sideH = boardH
     sideX = metrics.originX + boardW + boardW * GAP_FRAC
     sideY = metrics.originY
+
+    sideHeaderH = Math.max(22, sideW * 0.34)
+    sideCell = Math.max(0.5, Math.min(sideW / COLS, (sideH - sideHeaderH) / ROWS))
+    sideGw = sideCell * COLS
+    sideGh = sideCell * ROWS
+    sideGx = sideX + (sideW - sideGw) / 2
+    sideGy = sideY + sideHeaderH
+    sidePad = sideCell * 0.3
 
     buildVignetteLayer()
     buildDangerLayer()
@@ -622,13 +641,13 @@ export function createRenderer(deps: RendererDeps): Renderer {
   }
 
   function drawOpponent(view: OpponentView): void {
-    const headerH = Math.max(22, sideW * 0.34)
-    const cell = Math.max(0.5, Math.min(sideW / COLS, (sideH - headerH) / ROWS))
-    const gw = cell * COLS
-    const gh = cell * ROWS
-    const gx = sideX + (sideW - gw) / 2
-    const gy = sideY + headerH
-    const pad = cell * 0.3
+    const headerH = sideHeaderH
+    const cell = sideCell
+    const gw = sideGw
+    const gh = sideGh
+    const gx = sideGx
+    const gy = sideGy
+    const pad = sidePad
 
     ctx.textAlign = 'left'
     ctx.textBaseline = 'alphabetic'
@@ -682,14 +701,64 @@ export function createRenderer(deps: RendererDeps): Renderer {
     }
   }
 
+  /**
+   * Holds the sidebar from the first frame of a versus match until the first
+   * opponent snapshot arrives: same box, empty board, dimmed, so the reserved
+   * space reads as "not connected yet" rather than as a rendering hole.
+   */
+  function drawOpponentPlaceholder(t: number, reduced: boolean): void {
+    const cell = sideCell
+    const gw = sideGw
+    const gh = sideGh
+    const gx = sideGx
+    const gy = sideGy
+    const pad = sidePad
+
+    // The name/score slots stay blank; two dim slugs keep the header readable
+    // as "pending" instead of looking like text that failed to draw.
+    ctx.fillStyle = 'rgba(190,200,244,0.09)'
+    ctx.beginPath()
+    ctx.roundRect(gx, sideY + sideHeaderH * 0.14, gw * 0.56, sideHeaderH * 0.2, sideHeaderH * 0.1)
+    ctx.roundRect(gx, sideY + sideHeaderH * 0.5, gw * 0.32, sideHeaderH * 0.22, sideHeaderH * 0.11)
+    ctx.fill()
+
+    ctx.beginPath()
+    ctx.roundRect(gx - pad, gy - pad, gw + pad * 2, gh + pad * 2, cell * 0.7)
+    ctx.fillStyle = 'rgba(7,7,13,0.72)'
+    ctx.fill()
+    ctx.setLineDash(WAIT_DASH)
+    ctx.lineWidth = Math.max(1, cell * 0.16)
+    ctx.strokeStyle = 'rgba(122,146,214,0.22)'
+    ctx.stroke()
+    ctx.setLineDash(NO_DASH)
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)'
+    ctx.lineWidth = 1
+    const killY = Math.round(gy + TOP_KILL_ROW * cell) + 0.5
+    ctx.beginPath()
+    ctx.moveTo(gx, killY)
+    ctx.lineTo(gx + gw, killY)
+    ctx.stroke()
+
+    ctx.font = fontName
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.globalAlpha = reduced ? 0.5 : 0.36 + 0.2 * (0.5 + 0.5 * Math.sin(t * 2.2))
+    ctx.fillStyle = '#c6cee6'
+    ctx.fillText('waiting…', gx + gw / 2, gy + gh / 2)
+    ctx.globalAlpha = 1
+  }
+
   // -- Frame ----------------------------------------------------------------
 
   function render(state: GameState, opts: RenderOptions): void {
     if (cssW <= 1 || cssH <= 1) resize()
 
-    const wantSide = opts.opponent !== null
-    if (wantSide !== hasOpponent) {
-      hasOpponent = wantSide
+    // Reserve the sidebar for the whole match. `state.versus` is known from the
+    // very first frame, whereas opts.opponent only turns up with the first
+    // network snapshot — laying out on that made the board jump mid-play.
+    if (state.versus !== hasOpponent) {
+      hasOpponent = state.versus
       layout()
     }
 
@@ -720,7 +789,10 @@ export function createRenderer(deps: RendererDeps): Renderer {
 
     ctx.restore()
 
-    if (opts.opponent) drawOpponent(opts.opponent)
+    if (hasOpponent) {
+      if (opts.opponent) drawOpponent(opts.opponent)
+      else drawOpponentPlaceholder(t, reduced)
+    }
     drawFlash()
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)

@@ -145,8 +145,22 @@ Versus games are never saved.
   ~25%, flashes at low alpha. Sound is unaffected.
 - Audio: procedural WebAudio SFX (launch swoosh, wall blip, impact thud, pop-cascade for
   matches with pitch rising per chain step, line-clear sweep, rise rumble, danger alarm,
-  power sparkle, curse zap, game-over down-sweep, UI clicks) + a light generative music loop
-  (minor-pentatonic pad/arp) whose `setIntensity(0..1)` follows level & danger.
+  power sparkle, curse zap, game-over down-sweep, UI clicks) plus generative music.
+
+**Music.** One lookahead scheduler renders every track from a `TrackConfig` (scale, chord
+voicings, tempo, arp subdivision/density, pad & pluck timbres, filter, swing), so tracks are
+data rather than code. Six base tracks in different modes/tempos; `startMusic()` picks one at
+random (never repeating the previous), so runs don't all sound alike. `setIntensity(0..1)`
+still modulates tempo and cutoff *within* the active track, following level and danger.
+
+Dramatic pace changes take the music over: `pushMusicEvent(id, kind)` cross-fades to a
+variation (`danger` tense and faster, `curse` darker and dissonant, `power` bright and
+shimmering, `surge` a hotter version of what's playing) and remembers what was playing.
+`popMusicEvent(id)` ends it, and when the stack empties the score cross-fades back to a
+**re-rolled** base track rather than the old one. main.ts drives this: danger on/off, timed
+curses applied/expired, holding vs. spending power bubbles, and a `shuffleMusic()` every few
+levels as the rise speed ramps. Cross-fades duck the music bus and swap on a bar line, so a
+swap never hard-cuts or leaves stale notes ringing.
 
 ## UI
 

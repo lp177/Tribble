@@ -1,13 +1,16 @@
 import './style.css'
 import {
   AIM_KEY_SPEED,
+  CURSE_DURATION,
   LAUNCH_X,
   LAUNCH_Y,
   MAX_AIM_ANGLE,
   type CurseKind,
   type Game,
+  type GamePhase,
   type NetSession,
   type OpponentView,
+  type SaveGame,
   type Settings,
   type VersusController,
 } from './types'
@@ -60,6 +63,13 @@ let game: Game | null = null
 let unwireGame: (() => void) | null = null
 let paused = false
 
+// A SaveGame cannot describe a piece in flight or a cascade in progress, so we
+// only ever persist the board at rest. Saving mid-flight would hand the player
+// their piece back on resume; saving mid-cascade would duplicate the piece that
+// just locked. Refreshed on each transition back to aiming.
+let lastCoherentSave: SaveGame | null = null
+let lastPhase: GamePhase | null = null
+
 // Attract-mode board rendered behind the menus.
 const demoGame = createGame({ seed: 42 })
 
@@ -69,6 +79,8 @@ let versus: VersusController | null = null
 let opponentView: OpponentView | null = null
 let pendingConnect: { cancel(): void } | null = null
 let unsubSessionMsg: (() => void) | null = null
+/** Guards against a superseded lobby attempt resolving or rejecting late. */
+let versusAttempt = 0
 
 // ---------------------------------------------------------------------------
 // Reduced motion
@@ -86,6 +98,9 @@ function applyMotionPrefs(): void {
   const rm = reducedMotion()
   juice.setReducedMotion(rm)
   particles.setReducedMotion(rm)
+  // The Settings override has to reach CSS too, or DOM animations keep running
+  // when the player asked for calm. The media query alone cannot see it.
+  document.documentElement.dataset.reducedMotion = rm ? 'on' : 'off'
 }
 
 motionQuery.addEventListener('change', applyMotionPrefs)
@@ -176,12 +191,21 @@ function wireGame(g: Game): () => void {
     }),
     ev.on('riseWarning', () => audio.play('riseWarning')),
     ev.on('danger', ({ on }) => {
-      if (on) audio.play('danger')
+      // The stack reaching the kill zone is the biggest pace change there is,
+      // so the score follows it and returns to a fresh track on the way out.
+      if (on) {
+        audio.play('danger')
+        audio.pushMusicEvent('danger', 'danger')
+      } else {
+        audio.popMusicEvent('danger')
+      }
     }),
     ev.on('levelUp', ({ level }) => {
       audio.play('levelUp')
       hud.announce(`Level ${level}`, 'info')
       juice.flash('#4cc9f0', 0.25)
+      // Every few levels the rise speed has moved enough to warrant a new track.
+      if (level % 3 === 1) audio.shuffleMusic()
     }),
     ev.on('gameOver', () => {
       if (mode !== 'solo') return
@@ -189,6 +213,7 @@ function wireGame(g: Game): () => void {
       juice.shake(0.8, 0.8)
       audio.stopMusic()
       clearSave()
+      lastCoherentSave = null
       const score = g.state.score
       const best = Math.max(loadBest(), score)
       storeBest(best)
@@ -202,12 +227,22 @@ function wireGame(g: Game): () => void {
       audio.play('powerCatch')
       hud.announce(`Power stored: ${CURSE_LABEL[kind]} — press C to send`, 'good')
       juice.flash(POWER_COLOR, 0.2)
+      // Holding power brightens the score until you spend the last one.
+      audio.pushMusicEvent('power', 'power')
     }),
     ev.on('curseApplied', ({ kind }) => {
       audio.play('curseHit')
       juice.shake(0.45, 0.4)
       juice.flash('#ff5c8a', 0.3)
       hud.announce(`Cursed: ${CURSE_LABEL[kind]}`, 'bad')
+      // A timed curse owns the music until it expires (see curseExpired). An
+      // instant one has no end to wait for, so it just shakes up the track.
+      if (CURSE_DURATION[kind] > 0) audio.pushMusicEvent(`curse:${kind}`, 'curse')
+      else audio.shuffleMusic()
+    }),
+    ev.on('curseExpired', ({ kind }) => {
+      audio.popMusicEvent(`curse:${kind}`)
+      hud.announce(`${CURSE_LABEL[kind]} wore off`, 'good')
     }),
   )
 
@@ -238,6 +273,8 @@ function startSolo(fromSave: boolean): void {
     g = createGame({ seed: (Math.random() * 0x7fffffff) | 0 })
   }
   attachGame(g)
+  lastCoherentSave = g.serialize()
+  lastPhase = g.state.phase
   mode = 'solo'
   paused = false
   opponentView = null
@@ -248,7 +285,9 @@ function startSolo(fromSave: boolean): void {
 }
 
 function pauseSolo(): void {
-  if (mode === 'menu' || paused) return
+  // Versus has no pause: the opponent keeps playing, so freezing the local sim
+  // would just stop our snapshots and hand them the match.
+  if (mode !== 'solo' || paused) return
   paused = true
   menu.show('paused')
 }
@@ -258,10 +297,25 @@ function resumeFromPause(): void {
   menu.hideAll()
 }
 
+// A versus match cannot pause — the opponent plays on — so leaving is a
+// forfeit, and a stray Escape should not cost someone the game.
+let forfeitArmedUntil = 0
+
+function confirmForfeit(): void {
+  const now = performance.now()
+  if (now < forfeitArmedUntil) {
+    forfeitArmedUntil = 0
+    quitToTitle()
+    return
+  }
+  forfeitArmedUntil = now + 2500
+  hud.announce('Press Escape again to forfeit the match', 'bad')
+}
+
 function quitToTitle(): void {
-  if (mode === 'solo' && game && game.state.phase !== 'gameover') {
+  if (mode === 'solo' && lastCoherentSave !== null) {
     // Keep the run resumable from the title screen.
-    storeSave(game.serialize())
+    storeSave(lastCoherentSave)
   }
   teardownVersus()
   mode = 'menu'
@@ -282,6 +336,7 @@ function quitToTitle(): void {
 // ---------------------------------------------------------------------------
 
 function teardownVersus(): void {
+  versusAttempt++
   if (pendingConnect) {
     pendingConnect.cancel()
     pendingConnect = null
@@ -345,19 +400,28 @@ function beginVersusMatch(seed: number): void {
 
 async function hostVersus(): Promise<void> {
   teardownVersus()
+  const attempt = ++versusAttempt
   menu.setVersusStatus('Creating room…')
   try {
     const p = hostSession(settings.playerName, (code) => {
+      if (attempt !== versusAttempt) return
       menu.setVersusCode(code)
       menu.setVersusStatus('Waiting for an opponent… share the code!')
     })
     pendingConnect = p
-    session = await p
+    const s = await p
+    if (attempt !== versusAttempt) {
+      // Superseded while connecting: this session is nobody's, so drop it.
+      s.close()
+      return
+    }
+    session = s
     pendingConnect = null
     const seed = (Math.random() * 0x7fffffff) | 0
-    session.send({ t: 'start', seed })
+    s.send({ t: 'start', seed })
     beginVersusMatch(seed)
   } catch (err) {
+    if (attempt !== versusAttempt) return
     pendingConnect = null
     if ((err as Error).message !== 'cancelled') {
       menu.setVersusStatus(`Could not host: ${(err as Error).message}`)
@@ -367,15 +431,21 @@ async function hostVersus(): Promise<void> {
 
 async function joinVersus(code: string): Promise<void> {
   teardownVersus()
+  const attempt = ++versusAttempt
   menu.setVersusStatus('Joining room…')
   try {
     const p = joinSession(code, settings.playerName)
     pendingConnect = p
-    session = await p
+    const s = await p
+    if (attempt !== versusAttempt) {
+      s.close()
+      return
+    }
+    session = s
     pendingConnect = null
-    menu.setVersusStatus(`Connected to ${session.peerName} — starting…`)
-    unsubSessionMsg = session.onMessage((msg) => {
-      if (msg.t === 'start') {
+    menu.setVersusStatus(`Connected to ${s.peerName} — starting…`)
+    unsubSessionMsg = s.onMessage((msg) => {
+      if (msg.t === 'start' && attempt === versusAttempt) {
         if (unsubSessionMsg) {
           unsubSessionMsg()
           unsubSessionMsg = null
@@ -384,6 +454,7 @@ async function joinVersus(code: string): Promise<void> {
       }
     })
   } catch (err) {
+    if (attempt !== versusAttempt) return
     pendingConnect = null
     if ((err as Error).message !== 'cancelled') {
       menu.setVersusStatus(`Could not join: ${(err as Error).message}`)
@@ -469,6 +540,7 @@ input.onAction((action) => {
   if (action === 'pause') {
     if (mode === 'menu') return
     if (menu.current === 'paused') resumeFromPause()
+    else if (mode === 'versus' && menu.current === null) confirmForfeit()
     else if (menu.current === null) pauseSolo()
     return
   }
@@ -489,6 +561,7 @@ input.onAction((action) => {
         versus.sendCurse(kind)
         audio.play('curseSent')
         hud.announce(`Sent: ${CURSE_LABEL[kind]}`, 'good')
+        if (game.state.inventory.length === 0) audio.popMusicEvent('power')
       }
       break
     }
@@ -523,10 +596,7 @@ window.addEventListener('pointerdown', () => audio.resume(), { once: true })
 // Auto-save + lifecycle
 // ---------------------------------------------------------------------------
 
-installAutoSave(() => {
-  if (mode === 'solo' && game && game.state.phase !== 'gameover') return game.serialize()
-  return null
-})
+installAutoSave(() => (mode === 'solo' ? lastCoherentSave : null))
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && mode === 'solo' && menu.current === null) pauseSolo()
@@ -556,6 +626,12 @@ function frame(now: number): void {
     if (dir !== 0) active.aimBy((mirrored() ? -dir : dir) * AIM_KEY_SPEED * realDt)
 
     active.update(realDt * juice.timeScale)
+
+    if (mode === 'solo') {
+      const phase = active.state.phase
+      if (phase === 'aiming' && lastPhase !== 'aiming') lastCoherentSave = active.serialize()
+      lastPhase = phase
+    }
 
     if (versus) versus.update(realDt)
 

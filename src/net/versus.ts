@@ -54,6 +54,8 @@ export function createVersus(
   let acc = 0
   let ended = false
   let disposed = false
+  /** The peer is gone for good: no more traffic, no rematch is ever possible. */
+  let peerGone = false
   let localWant = false
   let remoteWant = false
   /** Reused so the renderer keeps a stable object between snapshots. */
@@ -64,7 +66,7 @@ export function createVersus(
   const stateMsg = { t: 'state' as const, grid: flat, score: 0, danger: false }
 
   const safeSend = (msg: NetMsg): void => {
-    if (disposed) return
+    if (disposed || peerGone) return
     try {
       session.send(msg)
     } catch (err) {
@@ -72,14 +74,34 @@ export function createVersus(
     }
   }
 
-  const end = (result: 'win' | 'lose' | 'disconnect'): void => {
-    if (ended || disposed) return
-    ended = true
+  const fireEnd = (result: 'win' | 'lose' | 'disconnect'): void => {
     try {
       hooks.onEnd(result)
     } catch (err) {
       console.error('versus: onEnd hook failed', err)
     }
+  }
+
+  /** One end per match: the first result wins, later duplicates are dropped. */
+  const end = (result: 'win' | 'lose' | 'disconnect'): void => {
+    if (ended || disposed) return
+    ended = true
+    fireEnd(result)
+  }
+
+  /**
+   * The session died. During a match that is simply the result; once the match
+   * is over it is new information — the post-match screen is offering a rematch
+   * that can never happen — so the UI hears about it either way, exactly once.
+   */
+  const handleClose = (): void => {
+    if (disposed || peerGone) return
+    peerGone = true
+    // Nothing is pending any more: requestRematch() must not wait forever.
+    localWant = false
+    remoteWant = false
+    ended = true
+    fireEnd('disconnect')
   }
 
   const unsubscribeGame = (): void => {
@@ -112,6 +134,9 @@ export function createVersus(
   }
 
   const handleState = (msg: { grid: number[]; score: number; danger: boolean }): void => {
+    // Symmetric with update(): once the match is decided the last snapshot is
+    // the one that matches the result, so late ones must not overwrite it.
+    if (ended) return
     const incoming: unknown = msg.grid
     if (!Array.isArray(incoming) || incoming.length !== CELL_COUNT) return
 
@@ -155,14 +180,14 @@ export function createVersus(
 
   /** The host owns the seed, so only it closes the handshake. */
   const maybeAcceptRematch = (): void => {
-    if (!localWant || !remoteWant || session.role !== 'host') return
+    if (peerGone || !localWant || !remoteWant || session.role !== 'host') return
     const seed = (Math.random() * 0x7fffffff) | 0
     safeSend({ t: 'rematchAccept', seed })
     startRematch(seed)
   }
 
   const unsubMsg = session.onMessage((msg) => {
-    if (disposed) return
+    if (disposed || peerGone) return
     try {
       if (msg === null || typeof msg !== 'object') return
       switch (msg.t) {
@@ -170,6 +195,8 @@ export function createVersus(
           handleState(msg)
           break
         case 'curse':
+          // A curse only means anything while this match is actually running.
+          if (ended || current.state.phase === 'gameover') return
           if (!isCurseKind(msg.kind)) return
           current.applyCurse(msg.kind)
           hooks.onCurseIncoming(msg.kind)
@@ -187,7 +214,9 @@ export function createVersus(
           maybeAcceptRematch()
           break
         case 'rematchAccept':
-          if (session.role !== 'guest' || !isFiniteNumber(msg.seed)) return
+          // Only the guest takes a seed, and only for a rematch it asked for.
+          if (session.role !== 'guest' || !localWant) return
+          if (!isFiniteNumber(msg.seed)) return
           startRematch(msg.seed)
           break
         default:
@@ -198,10 +227,7 @@ export function createVersus(
     }
   })
 
-  session.onClose(() => {
-    if (disposed) return
-    end('disconnect')
-  })
+  session.onClose(handleClose)
 
   subscribeGame(current)
 
@@ -209,7 +235,7 @@ export function createVersus(
     update(dt: number): void {
       // Once the match is decided both sides stop broadcasting, so the final
       // snapshot stays the one that matches the result.
-      if (disposed || ended) return
+      if (disposed || peerGone || ended) return
       acc += dt
       if (acc < STATE_INTERVAL) return
       acc = acc >= STATE_INTERVAL * 2 ? 0 : acc - STATE_INTERVAL
@@ -217,11 +243,13 @@ export function createVersus(
     },
 
     sendCurse(kind: CurseKind): void {
+      if (ended) return
       safeSend({ t: 'curse', kind })
     },
 
     requestRematch(): void {
-      if (disposed || localWant) return
+      // With the peer gone there is nobody left to agree, so never start waiting.
+      if (disposed || peerGone || localWant) return
       localWant = true
       safeSend({ t: 'rematchRequest' })
       maybeAcceptRematch()

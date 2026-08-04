@@ -16,8 +16,13 @@ before the stack reaches your launcher.
   fall, which can trigger **chain reactions** with big multipliers.
 - **The stack rises** — a new garbage row pushes up from the bottom on a timer. The pace
   increases over time, but ever more slowly, so the pressure ramps without becoming unfair.
-- **Game feel** — screen shake, hit-stop, particles, procedural sound effects and generative
-  music, all synthesized in the browser (no asset files). Honors `prefers-reduced-motion`.
+- **Game feel** — screen shake, hit-stop, particles and procedural sound effects, all
+  synthesized in the browser with no asset files. Honors `prefers-reduced-motion` (and a
+  Settings override).
+- **Music that follows the match** — six generative tracks in different modes and tempos, one
+  picked at random each run so no two games sound alike. The score tightens with your speed,
+  and dramatic swings take it over: the stack reaching the danger zone, a curse landing, a
+  caught power bubble. When the moment passes, it cross-fades to a fresh track.
 - **Auto-save** — close the tab mid-game and the title screen offers **Resume** next time.
 - **Versus mode** — peer-to-peer over WebRTC (PeerJS): host a room, share the 5-letter code.
   Clearing cells can release **power bubbles** that float toward the top — catch one with a
@@ -33,6 +38,9 @@ before the stack reaches your launcher.
 | Rotate | Right-click, `↑` / `X` (CW), `Z` (CCW) |
 | Send curse (versus) | `C` |
 | Pause | `Escape` |
+
+A versus match cannot be paused — your opponent keeps playing — so `Escape` there arms a
+forfeit instead, and asks for a second press to confirm.
 
 ## Development
 

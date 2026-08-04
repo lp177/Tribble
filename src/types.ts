@@ -412,11 +412,27 @@ export type SfxName =
   | 'curseSent'
   | 'curseHit'
 
+/**
+ * A moment dramatic enough to take the music over until it passes. Pushed and
+ * popped by id so the score returns to normal when the moment does.
+ */
+export type MusicEvent = 'curse' | 'power' | 'danger' | 'surge'
+
 export interface AudioEngine {
   /** Safe to call anytime; silently no-ops before resume(). */
   play(name: SfxName, opts?: { pitch?: number; volume?: number }): void
+  /** Starts a randomly chosen track, so runs don't all sound the same. */
   startMusic(): void
   stopMusic(): void
+  /** Cross-fade to a different randomly chosen base track. */
+  shuffleMusic(): void
+  /**
+   * Take the music over for a named event. The id must be unique while active;
+   * pushing the same id again just refreshes it.
+   */
+  pushMusicEvent(id: string, kind: MusicEvent): void
+  /** End that event; the score returns to a re-rolled base track. */
+  popMusicEvent(id: string): void
   /** 0..1; drives music energy (tempo/brightness). */
   setIntensity(v: number): void
   setMasterVolume(v: number): void
