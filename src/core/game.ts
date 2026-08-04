@@ -252,6 +252,10 @@ function stepMover(
     remaining -= t
     if (onAdvance) onAdvance(m.x, m.y)
     if (wall !== 0) {
+      // Snap onto the wall: `m.x + m.vx * t` can land a hair outside it, and a
+      // pivot even 1e-16 below 0 floors to column -1, which reads as a
+      // collision and would fake an impact against the wall itself.
+      m.x = wall < 0 ? BOUNDS.lo : BOUNDS.hi
       m.vx = -m.vx
       if (onBounce) onBounce(m.x, m.y)
     }
@@ -502,22 +506,17 @@ function buildGame(opts: GameOptions, save: SaveGame | null): Game {
     if (!f) return
     const speed = Math.hypot(f.vx, f.vy)
     if (!(speed > 0)) return
-    const maxDt = MAX_SUBSTEP_CELLS / speed
-    let remaining = dt
-    let guard = 0
-    while (remaining > TIME_EPS && guard++ < 4096) {
-      const step = remaining > maxDt ? maxDt : remaining
-      remaining -= step
-      if (stepMover(state.grid, f, step, scratch, onBounce)) {
-        impactAndLock(f, speed)
-        return
-      }
-      if (state.versus && state.powers.length > 0) catchPowers(f)
+    // Versus samples finely so power bubbles can be caught mid-interval; solo
+    // has nothing to catch, so it takes the exact crossing-to-crossing steps.
+    const sample = state.versus ? MAX_SUBSTEP_CELLS : Infinity
+    const advance = state.versus ? onAdvance : null
+    if (stepMover(state.grid, f, track, dt, sample, scratch, onBounce, advance)) {
+      impactAndLock(f, speed)
     }
   }
 
   function impactAndLock(f: FlyingPiece, speed: number): void {
-    findLockPlacement(state.grid, f.piece, f.x, f.y, f.vx, f.vy, scratch)
+    findLockPlacement(state.grid, f.piece, track, f.x, f.y, f.vx, f.vy, scratch)
     const px = PLACE.x
     const py = settle(state.grid, f.piece, px, PLACE.y, scratch)
     const cells = pieceCells(f.piece, px, py)
@@ -729,6 +728,9 @@ function buildGame(opts: GameOptions, save: SaveGame | null): Game {
       f.piece = rotatePiece(f.piece, dir)
       pieceXBounds(f.piece, BOUNDS)
       f.x = clamp(f.x, BOUNDS.lo, BOUNDS.hi)
+      // The clamp can move the pivot, so the tracked cell must follow it.
+      track.col = Math.floor(f.x)
+      track.row = Math.floor(f.y)
     }
     bus.emit('rotate', { dir })
   }
@@ -743,6 +745,8 @@ function buildGame(opts: GameOptions, save: SaveGame | null): Game {
       vx: Math.sin(angle) * LAUNCH_SPEED,
       vy: Math.cos(angle) * LAUNCH_SPEED,
     }
+    track.col = Math.floor(LAUNCH_X)
+    track.row = Math.floor(LAUNCH_Y)
     state.phase = 'flying'
     bus.emit('launch', { angle })
   }
@@ -822,6 +826,7 @@ function buildGame(opts: GameOptions, save: SaveGame | null): Game {
 // ---------------------------------------------------------------------------
 
 const aimScratch = makeScratch()
+const aimTrack: Track = { col: 0, row: 0 }
 const aimMover: Mover = {
   piece: { kind: 'I', rot: 0, colors: [0, 0, 1, 1] },
   x: 0,
@@ -846,21 +851,18 @@ export function computeAimPath(state: GameState, maxPoints = 24): AimPoint[] {
   m.vx = Math.sin(state.aimAngle) * LAUNCH_SPEED
   m.vy = Math.cos(state.aimAngle) * LAUNCH_SPEED
 
-  const dt = MAX_SUBSTEP_CELLS / LAUNCH_SPEED
   const addBounce = (x: number, y: number): void => {
     if (points.length < bounceLimit) points.push({ x, y })
   }
 
-  let hit = false
-  for (let i = 0; i < AIM_MAX_STEPS; i++) {
-    if (stepMover(state.grid, m, dt, aimScratch, addBounce)) {
-      hit = true
-      break
-    }
-  }
+  // Seeded so an impact on the very first interval snaps against this launch
+  // rather than whatever cell the previous frame's preview ended on.
+  aimTrack.col = Math.floor(LAUNCH_X)
+  aimTrack.row = Math.floor(LAUNCH_Y)
+  const hit = stepMover(state.grid, m, aimTrack, AIM_MAX_TIME, Infinity, aimScratch, addBounce, null)
 
   if (hit) {
-    findLockPlacement(state.grid, m.piece, m.x, m.y, m.vx, m.vy, aimScratch)
+    findLockPlacement(state.grid, m.piece, aimTrack, m.x, m.y, m.vx, m.vy, aimScratch)
     points.push({ x: PLACE.x, y: settle(state.grid, m.piece, PLACE.x, PLACE.y, aimScratch) })
   } else {
     points.push({ x: m.x, y: m.y })
