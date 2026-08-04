@@ -175,11 +175,12 @@ are mandatory and must match `src/types.ts` signatures exactly.
 
 - `src/core/rng.ts` — `createRng(seed: number): Rng` (mulberry32; `next()`, `int(n)`,
   `pick<T>(arr)`, `getState()/setState()`).
-- `src/core/piece.ts` — `SHAPES: Record<PieceKind, ReadonlyArray<ReadonlyArray<CellOffset>>>`
-  (4 rotations × 4 cells), `PIECE_KINDS: PieceKind[]`, `makeBag(rng: Rng): PieceKind[]`,
-  `makePiece(kind: PieceKind, rng: Rng): Piece`, `pieceCells(piece: Piece, x: number,
-  y: number): PlacedCell[]` (rounded grid cells for a pivot at continuous (x, y)),
-  `rotatePiece(piece: Piece, dir: 1 | -1): Piece`.
+- `src/core/piece.ts` — `makeBag(rng: Rng): PieceKind[]` (7-bag), `makePiece(kind: PieceKind,
+  rng: Rng): Piece` (colors = [A, A, B, B], A ≠ B), `pieceCells(piece: Piece, x: number,
+  y: number): PlacedCell[]` (grid cells for a pivot at continuous (x, y): cell i's center is
+  at (x + off.x, y + off.y), so col = floor(x + off.x), row = floor(y + off.y)),
+  `rotatePiece(piece: Piece, dir: 1 | -1): Piece`. Shape data (`SHAPES`, `PIECE_KINDS`,
+  `pieceOffsets`) already lives in `src/types.ts` — use it, do not redefine it.
 - `src/core/board.ts` — `emptyGrid(): Grid`, `collides(grid: Grid, cells: PlacedCell[]):
   boolean` (occupied cell, floor, or side walls; the launcher zone rows are NOT a collision),
   `findLines(grid: Grid): number[]`, `findMatches(grid: Grid): Match[]`,
@@ -222,8 +223,9 @@ are mandatory and must match `src/types.ts` signatures exactly.
   MenuApi`. Builds all screens as DOM, Material dark, ripple helper applied to buttons,
   fully keyboard navigable, focus moved on screen change, `prefers-reduced-motion` respected
   for menu animations.
-- `src/ui/hud.ts` — `createHud(root: HTMLElement): HudApi`. Imports `drawPieceThumb` +
-  colors from `../render/theme` for the next-piece canvas and curse chips.
+- `src/ui/hud.ts` — `createHud(root: HTMLElement, drawThumb: (ctx: CanvasRenderingContext2D,
+  piece: Piece, sizePx: number) => void): HudApi`. The thumb callback (injected by main.ts
+  from render/theme) draws the next-piece preview, so hud imports nothing but `../types`.
 - `src/net/p2p.ts` — `hostSession(name: string, onCode: (code: string) => void):
   CancellablePromise<NetSession>`, `joinSession(code: string, name: string):
   CancellablePromise<NetSession>` using the `peerjs` npm package (default public broker).

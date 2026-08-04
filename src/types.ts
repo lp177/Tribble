@@ -58,6 +58,45 @@ export interface Match {
   cells: Array<{ row: number; col: number }>
 }
 
+// Shape data lives here (not in core) so render/ui can draw pieces without
+// importing core. Cell order is stable across rotations: colors[i] always
+// colors cell i. Cells 0,1 are orthogonally adjacent and cells 2,3 are
+// adjacent (diagonal for T), so a piece never self-matches 3 of a color.
+const BASE_SHAPES: Record<PieceKind, CellOffset[]> = {
+  I: [{ x: -1, y: 0 }, { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 2, y: 0 }],
+  O: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 }],
+  T: [{ x: -1, y: 0 }, { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }],
+  S: [{ x: 1, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 1 }],
+  Z: [{ x: -1, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 }],
+  J: [{ x: -1, y: 0 }, { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }],
+  L: [{ x: 1, y: 0 }, { x: 0, y: 0 }, { x: -1, y: 0 }, { x: -1, y: 1 }],
+}
+
+function buildRotations(base: CellOffset[]): CellOffset[][] {
+  const rots: CellOffset[][] = [base]
+  for (let r = 1; r < 4; r++) {
+    rots.push(rots[r - 1].map((c) => ({ x: -c.y, y: c.x })))
+  }
+  return rots
+}
+
+export const PIECE_KINDS: readonly PieceKind[] = ['I', 'O', 'T', 'S', 'Z', 'J', 'L']
+
+/** SHAPES[kind][rot] -> 4 cell offsets from the pivot. */
+export const SHAPES: Record<PieceKind, ReadonlyArray<ReadonlyArray<CellOffset>>> = {
+  I: buildRotations(BASE_SHAPES.I),
+  O: buildRotations(BASE_SHAPES.O),
+  T: buildRotations(BASE_SHAPES.T),
+  S: buildRotations(BASE_SHAPES.S),
+  Z: buildRotations(BASE_SHAPES.Z),
+  J: buildRotations(BASE_SHAPES.J),
+  L: buildRotations(BASE_SHAPES.L),
+}
+
+export function pieceOffsets(piece: Piece): ReadonlyArray<CellOffset> {
+  return SHAPES[piece.kind][piece.rot]
+}
+
 export interface AimPoint {
   x: number
   y: number
