@@ -35,6 +35,8 @@ import {
 } from './save/persistence'
 import { createMenu } from './ui/menu'
 import { createHud } from './ui/hud'
+import { createUpdateBanner } from './ui/update-banner'
+import { initUpdates } from './pwa/updates'
 import { hostSession, joinSession } from './net/p2p'
 import { createVersus } from './net/versus'
 
@@ -622,6 +624,39 @@ installAutoSave(() => (mode === 'solo' ? lastCoherentSave : null))
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && mode === 'solo' && menu.current === null) pauseSolo()
 })
+
+// ---------------------------------------------------------------------------
+// Offline support and app updates
+// ---------------------------------------------------------------------------
+
+const updates = initUpdates()
+
+const updateBanner = createUpdateBanner(uiRoot, {
+  onReload() {
+    // Reloading is only safe because the run is written out first; the title
+    // screen will offer Resume on the way back in.
+    if (mode === 'solo' && lastCoherentSave !== null) storeSave(lastCoherentSave)
+    updates.applyUpdate()
+  },
+  onDismiss() {
+    audio.play('click')
+  },
+})
+
+updates.onUpdateReady(() => {
+  updateBanner.showUpdate()
+  menu.setHasSave(loadSave() !== null)
+})
+
+updates.onOnlineChange((online) => {
+  updateBanner.setOffline(!online)
+  // Versus needs the signalling server; the rest of the game does not.
+  if (!online && (mode === 'versus' || menu.current === 'versus-lobby')) {
+    menu.setVersusStatus('You are offline — versus needs a connection.')
+  }
+  if (online) updates.checkForUpdate()
+})
+updateBanner.setOffline(!updates.online)
 
 window.addEventListener('resize', () => renderer.resize())
 renderer.resize()

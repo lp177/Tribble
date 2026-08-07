@@ -1,0 +1,34 @@
+{
+  "name": "Tribble",
+  "short_name": "Tribble",
+  "description": "A Tetris x bubble-shooter hybrid. Aim, rotate and launch pieces, clear lines and colour matches before the stack reaches the top.",
+  "start_url": "./",
+  "scope": "./",
+  "id": "./",
+  "display": "standalone",
+  "background_color": "#0f0f17",
+  "theme_color": "#12121a",
+  "categories": [
+    "games"
+  ],
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

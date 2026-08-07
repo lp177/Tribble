@@ -6,7 +6,7 @@
   "description": "Tribble — a Tetris × bubble-shooter hybrid for the browser.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && node scripts/gen-pwa-assets.mjs && vite build && node scripts/build-sw.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

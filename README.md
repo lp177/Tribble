@@ -31,6 +31,10 @@ before the stack reaches your launcher.
   and dramatic swings take it over: the stack reaching the danger zone, a curse landing, a
   caught power bubble. When the moment passes, it cross-fades to a fresh track.
 - **Auto-save** — close the tab mid-game and the title screen offers **Resume** next time.
+- **Installable and offline** — a service worker precaches the whole game, so it starts
+  instantly and plays with no connection at all (only versus needs the network). It keeps
+  checking for new deploys in the background and offers a **Reload** prompt when one lands,
+  saving your run first — so a refresh can never leave you stuck on a stale build.
 - **Versus mode** — peer-to-peer over WebRTC (PeerJS): host a room, share the 5-letter code.
   Clearing cells can release **power bubbles** that float toward the top — catch one with a
   launched piece to store a **curse** (garbage rows, speed-up, fog, scramble, mirrored

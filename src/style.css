@@ -1752,3 +1752,104 @@ body {
     opacity: 0;
   }
 }
+
+/* ------------------------------------------------------------------------- */
+/* Update banner + offline chip (service worker)                              */
+/* ------------------------------------------------------------------------- */
+
+.btn--small {
+  min-height: 34px;
+  padding: 0 16px;
+  font-size: 0.82rem;
+}
+
+.update-banner {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 14px 16px;
+  border: 1px solid var(--outline);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  box-shadow: var(--elev-4);
+  pointer-events: auto;
+  animation: update-banner-in var(--dur-slow) var(--ease-out) both;
+}
+
+.update-banner__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.update-banner__title {
+  color: var(--on-surface);
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.update-banner__hint {
+  color: var(--on-surface-variant);
+  font-size: 0.78rem;
+}
+
+.update-banner__actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+}
+
+@keyframes update-banner-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+
+.offline-chip {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border: 1px solid var(--outline);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+  color: var(--on-surface-variant);
+  font-size: 0.78rem;
+}
+
+.offline-chip__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+@media (max-width: 560px) {
+  .update-banner {
+    right: 12px;
+    left: 12px;
+    bottom: 12px;
+    max-width: none;
+  }
+}
+
+:root[data-reduced-motion='on'] .update-banner {
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-reduced-motion='off']) .update-banner {
+    animation: none !important;
+  }
+}

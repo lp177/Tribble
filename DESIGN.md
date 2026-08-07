@@ -209,6 +209,42 @@ aim left `ArrowLeft`, aim right `ArrowRight`, rotate CW `ArrowUp`/`KeyX`, rotate
 launch, right-click or wheel-click rotate. Keyboard aiming: holding aim keys sweeps the
 angle at `AIM_KEY_SPEED = 1.6` rad/s (main polls `isDown`).
 
+## Offline and updates (service worker)
+
+GitHub Pages offers no control over cache headers, so a refresh could serve a
+stale bundle indefinitely. A service worker fixes that *and* buys offline play.
+
+`src/pwa/service-worker.js` ships as plain JS with two placeholders;
+`scripts/build-sw.mjs` runs after `vite build` and replaces them with the hashed
+filenames Vite emitted and a `BUILD_ID` hashed from the built bytes. Because the
+id changes only when the output changes, `sw.js` is byte-identical across
+rebuilds of identical source and the browser correctly reports "no update".
+
+Strategies: navigations are served the **precached shell** (instant, offline);
+`/assets/*` is **cache-first** because the filenames are content-hashed and
+therefore immutable; anything else same-origin is **stale-while-revalidate**.
+Cross-origin requests are **not intercepted at all** — intercepting the PeerJS
+signalling traffic would break versus and gain nothing. Old `tribble-*` caches
+are deleted on activate.
+
+The worker never calls `skipWaiting()` on its own: swapping the bundle under a
+running game would be hostile. A new version installs and parks in `waiting`;
+`src/pwa/updates.ts` notices (`updatefound` → `statechange`, and on startup an
+existing `reg.waiting` while a controller exists) and raises a corner banner.
+Accepting posts `SKIP_WAITING`, and the `controllerchange` handler reloads —
+**after main.ts has written `lastCoherentSave`**, so the new version comes back
+with Resume available. A left-open tab re-checks on `visibilitychange` and every
+15 minutes.
+
+Connectivity is decided by a **HEAD probe of `sw.js`**, not by
+`navigator.onLine`: that flag only reports whether an interface exists and stays
+true behind a captive portal or a dead uplink. HEAD is not a GET, so the worker
+passes it through to the network instead of answering from cache.
+
+`scripts/gen-pwa-assets.mjs` draws the app icons in code and encodes them as PNG
+using only Node's `zlib` — a web app manifest needs real raster icons, and this
+keeps "no asset files" honest without adding a dependency or an undiffable blob.
+
 ## Module contracts
 
 Every module imports shared types from `../types` (path from its folder). **Do not redeclare
