@@ -209,6 +209,46 @@ aim left `ArrowLeft`, aim right `ArrowRight`, rotate CW `ArrowUp`/`KeyX`, rotate
 launch, right-click or wheel-click rotate. Keyboard aiming: holding aim keys sweeps the
 angle at `AIM_KEY_SPEED = 1.6` rad/s (main polls `isDown`).
 
+## The AI opponent
+
+Versus only ever talks to the opponent through `NetSession`, so the bot
+**impersonates a peer** rather than being a special case: `createBotSession()`
+returns a `NetSession` and `createVersus()` runs against it unmodified. Curses,
+the opponent mini-board, win/lose and the rematch handshake all work for free.
+
+`src/ai/bot-brain.ts` — `chooseMove(state, level, rng)`, pure and deterministic.
+It does not clone a `Game` to evaluate a candidate: `computeAimPath()` reads only
+the grid, the current piece and the aim angle, and its **last point is exactly
+the resting pivot**, so the search asks the real engine where a shot lands (the
+same invariant the aim-honesty test pins). It then resolves the clears on a
+scratch grid and scores the result: reward cleared cells, lines (`n^1.5`) and
+cascades; punish holes, aggregate height, bumpiness and max height; plus a
+danger term **quadratic in the remaining headroom**, so it is nearly flat on a
+low board and overwhelming near the kill line. A power-bubble bonus scaled by
+`level.powerAppetite` steers shots through bubbles (suppressed when the
+inventory is full, since the engine would drop the catch).
+
+Levels differ in *play*, not in a post-hoc handicap: `angleSteps` candidates,
+`blunderChance` blind shots, and `noise` jitter proportional to the score spread
+— measured over **survivable candidates only**, because letting a `-1e6` lethal
+option into the spread turns a weak bot into a uniform random picker.
+
+`src/net/bot-session.ts` — owns its own `Game` on the same seed (so both boards
+get the same pieces), thinks for `thinkMin..thinkMax` seconds, then rotates,
+aims and launches. It emits `state` at 5 Hz, `gameOver` once, and its own
+`curse` after holding a catch for `curseDelay`. It reports `role: 'host'` so the
+*human's* controller mints the rematch seed, and it echoes `rematchRequest` so
+the handshake closes. Outbound messages are queued and flushed from `update()`
+rather than delivered re-entrantly from `send()`.
+
+**`update()` is also the outbound message pump**, so main.ts drives it whenever
+a bot match exists — deliberately *outside* the "match is active" gate, because
+the rematch handshake happens while the versus-end screen is up. Gating it on
+active deadlocks Rematch silently; `scripts/smoke-bot.mjs` guards that.
+
+A bot match honours the player's difficulty tier (a peer match pins `normal` so
+two strangers share tuning; with both boards local there is nothing to reconcile).
+
 ## Offline and updates (service worker)
 
 GitHub Pages offers no control over cache headers, so a refresh could serve a

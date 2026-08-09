@@ -886,9 +886,10 @@ body {
   font-weight: 600;
 }
 
-/* -- Difficulty picker ----------------------------------------------------- */
+/* -- Option cards: difficulty tiers and bot levels ------------------------- */
 
-.difficulty-group {
+.difficulty-group,
+.level-group {
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -902,7 +903,15 @@ body {
   gap: 8px;
 }
 
-.difficulty-option {
+/* Three tiers, so let them wrap on their own rather than at a breakpoint. */
+.level-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(168px, 100%), 1fr));
+  gap: 8px;
+}
+
+.difficulty-option,
+.level-option {
   position: relative;
   display: flex;
   flex-direction: column;
@@ -925,7 +934,8 @@ body {
 }
 
 /* Material state layer, same recipe as .btn / .bind-row. */
-.difficulty-option::before {
+.difficulty-option::before,
+.level-option::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -936,35 +946,42 @@ body {
   z-index: -1;
 }
 
-.difficulty-option:hover::before {
+.difficulty-option:hover::before,
+.level-option:hover::before {
   opacity: var(--state-hover);
 }
 
-.difficulty-option:focus-visible::before {
+.difficulty-option:focus-visible::before,
+.level-option:focus-visible::before {
   opacity: var(--state-focus);
 }
 
-.difficulty-option:active::before {
+.difficulty-option:active::before,
+.level-option:active::before {
   opacity: var(--state-press);
 }
 
-.difficulty-option:focus {
+.difficulty-option:focus,
+.level-option:focus {
   outline: none;
 }
 
-.difficulty-option:focus-visible {
+.difficulty-option:focus-visible,
+.level-option:focus-visible {
   outline: 3px solid var(--accent);
   outline-offset: 2px;
 }
 
-.difficulty-option.is-selected {
+.difficulty-option.is-selected,
+.level-option.is-selected {
   border-color: var(--primary-light);
   background: rgba(124, 77, 255, 0.16);
   box-shadow: inset 0 0 0 1px var(--primary-light);
 }
 
 /* The selected marker, next to aria-checked for anyone not seeing colour. */
-.difficulty-option.is-selected::after {
+.difficulty-option.is-selected::after,
+.level-option.is-selected::after {
   content: '✓';
   position: absolute;
   top: 8px;
@@ -975,7 +992,8 @@ body {
   color: var(--primary-light);
 }
 
-.difficulty-name {
+.difficulty-name,
+.level-name {
   padding-right: 20px;
   font-size: 0.95rem;
   font-weight: 700;
@@ -983,11 +1001,13 @@ body {
   color: var(--on-surface);
 }
 
-.difficulty-option.is-selected .difficulty-name {
+.difficulty-option.is-selected .difficulty-name,
+.level-option.is-selected .level-name {
   color: var(--primary-light);
 }
 
-.difficulty-blurb {
+.difficulty-blurb,
+.level-blurb {
   font-size: 0.76rem;
   line-height: 1.35;
   color: var(--on-surface-variant);
@@ -1010,6 +1030,26 @@ body {
 
 .difficulty-option[data-difficulty='hardcore'].is-selected::after,
 .difficulty-option[data-difficulty='hardcore'].is-selected .difficulty-name {
+  color: var(--error);
+}
+
+/* Merciless is the Hardcore of the AI tiers, and should look like it. */
+.level-option[data-bot-level='merciless'] {
+  border-color: rgba(255, 92, 138, 0.35);
+}
+
+.level-option[data-bot-level='merciless'] .level-name {
+  color: var(--error);
+}
+
+.level-option[data-bot-level='merciless'].is-selected {
+  border-color: var(--error);
+  background: rgba(255, 92, 138, 0.16);
+  box-shadow: inset 0 0 0 1px var(--error), 0 0 22px rgba(255, 92, 138, 0.22);
+}
+
+.level-option[data-bot-level='merciless'].is-selected::after,
+.level-option[data-bot-level='merciless'].is-selected .level-name {
   color: var(--error);
 }
 
@@ -1110,7 +1150,8 @@ body {
 
 .lobby-panels {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  /* min() keeps the track from outgrowing the card on a very narrow phone. */
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
   gap: 16px;
 }
 
@@ -1122,6 +1163,14 @@ body {
   background: var(--surface-2);
   border: 1px solid var(--outline-soft);
   border-radius: var(--radius);
+}
+
+/* The AI panel leads the lobby: full width above the two networked options,
+   collapsing into the same single column as they do when space runs out. */
+.panel--bot {
+  grid-column: 1 / -1;
+  border-color: rgba(124, 77, 255, 0.45);
+  background: linear-gradient(180deg, rgba(124, 77, 255, 0.12), var(--surface-2) 70%);
 }
 
 .panel-title {
@@ -1642,7 +1691,8 @@ body {
     height: 48px;
   }
 
-  .difficulty-blurb {
+  .difficulty-blurb,
+  .level-blurb {
     font-size: 0.72rem;
   }
 

@@ -7,7 +7,10 @@ import {
   LAUNCH_X,
   LAUNCH_Y,
   MAX_AIM_ANGLE,
+  type BotLevel,
+  type BotSession,
   type CurseKind,
+  type Difficulty,
   type Game,
   type GamePhase,
   type NetSession,
@@ -39,6 +42,7 @@ import { createUpdateBanner } from './ui/update-banner'
 import { initUpdates } from './pwa/updates'
 import { hostSession, joinSession } from './net/p2p'
 import { createVersus } from './net/versus'
+import { createBotSession } from './net/bot-session'
 
 const CURSE_LABEL: Record<CurseKind, string> = {
   garbage: 'Garbage 🧱',
@@ -85,6 +89,10 @@ let pendingConnect: { cancel(): void } | null = null
 let unsubSessionMsg: (() => void) | null = null
 /** Guards against a superseded lobby attempt resolving or rejecting late. */
 let versusAttempt = 0
+/** Set when the opponent is the AI; it needs driving from the main loop. */
+let bot: BotSession | null = null
+/** The tier the current versus match is being played at. */
+let versusDifficulty: Difficulty = 'normal'
 
 // ---------------------------------------------------------------------------
 // Reduced motion
@@ -376,12 +384,19 @@ function teardownVersus(): void {
     session.close()
     session = null
   }
+  if (bot) {
+    bot.dispose()
+    bot = null
+  }
   opponentView = null
 }
 
-function beginVersusMatch(seed: number): void {
+function beginVersusMatch(seed: number, difficulty: Difficulty = 'normal'): void {
   if (!session) return
-  const g = createGame({ seed, versus: true })
+  // Peer matches pin 'normal' so two strangers share tuning. A bot match is
+  // entirely local, so it can honour the tier the player picked.
+  versusDifficulty = difficulty
+  const g = createGame({ seed, versus: true, difficulty })
   attachGame(g)
   const s = session
   const hooks = {
@@ -401,7 +416,7 @@ function beginVersusMatch(seed: number): void {
       if (result === 'disconnect') teardownVersus()
     },
     onRematch(newSeed: number) {
-      const ng = createGame({ seed: newSeed, versus: true })
+      const ng = createGame({ seed: newSeed, versus: true, difficulty: versusDifficulty })
       attachGame(ng)
       if (versus) versus.setGame(ng)
       opponentView = null
@@ -419,6 +434,18 @@ function beginVersusMatch(seed: number): void {
   menu.hideAll()
   audio.startMusic()
   hud.announce(`VS ${s.peerName} — fight!`, 'info')
+}
+
+function startBotMatch(level: BotLevel): void {
+  teardownVersus()
+  // Bumped by teardownVersus; claim the slot so a lobby attempt that resolves
+  // late cannot barge into the match we are about to start.
+  versusAttempt++
+  const seed = (Math.random() * 0x7fffffff) | 0
+  const created = createBotSession({ seed, level, difficulty: settings.difficulty })
+  bot = created
+  session = created.session
+  beginVersusMatch(seed, settings.difficulty)
 }
 
 async function hostVersus(): Promise<void> {
@@ -507,6 +534,10 @@ const menu = createMenu(uiRoot, settings, {
   },
   onJoinGame(code: string) {
     void joinVersus(code)
+  },
+  onPlayBot(level: BotLevel) {
+    audio.resume()
+    startBotMatch(level)
   },
   onCancelVersus() {
     teardownVersus()
@@ -703,6 +734,11 @@ function frame(now: number): void {
     audio.setIntensity(intensity)
     hud.update(active.state)
   }
+
+  // The AI is driven outside the `active` gate on purpose: its update() is also
+  // its outbound message pump, and the rematch handshake happens while the
+  // versus-end screen is up — i.e. precisely when the match is NOT active.
+  if (bot && mode === 'versus') bot.update(realDt)
 
   const shown = active ?? (game && menu.current !== 'title' ? game : demoGame)
   if (shown === demoGame) {

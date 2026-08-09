@@ -710,6 +710,8 @@ export interface MenuCallbacks {
   onOpenVersus(): void
   onHostGame(): void
   onJoinGame(code: string): void
+  /** Start a match against the AI instead of a person. */
+  onPlayBot(level: BotLevel): void
   onCancelVersus(): void
   onSettingsChanged(s: Settings): void
   /** Ask input layer to capture a key; resolve with the code or null. */
@@ -778,6 +780,104 @@ export interface NetSession {
 }
 
 export type CancellablePromise<T> = Promise<T> & { cancel(): void }
+
+// ---------------------------------------------------------------------------
+// AI opponent
+// ---------------------------------------------------------------------------
+
+export type BotLevel = 'rookie' | 'skilled' | 'merciless'
+
+export interface BotLevelConfig {
+  id: BotLevel
+  label: string
+  blurb: string
+  /** Candidate aim angles evaluated per turn; more = better play, more cost. */
+  angleSteps: number
+  /** Seconds the bot "thinks" before firing, so it does not feel robotic. */
+  thinkMin: number
+  thinkMax: number
+  /**
+   * Random jitter added to each candidate's score, as a fraction of the score
+   * spread. This is how a weaker bot misplays: it genuinely picks worse moves
+   * rather than being handicapped after the fact.
+   */
+  noise: number
+  /** Chance per turn of skipping the search entirely and firing roughly. */
+  blunderChance: number
+  /** Seconds it sits on a caught curse before sending it. */
+  curseDelay: number
+  /** Weight on steering the shot through a power bubble. */
+  powerAppetite: number
+}
+
+export const BOT_LEVELS: Record<BotLevel, BotLevelConfig> = {
+  rookie: {
+    id: 'rookie',
+    label: 'Rookie',
+    blurb: 'Still learning the angles. Misses a lot.',
+    angleSteps: 9,
+    thinkMin: 0.9,
+    thinkMax: 1.8,
+    noise: 0.55,
+    blunderChance: 0.22,
+    curseDelay: 3.5,
+    powerAppetite: 0.2,
+  },
+  skilled: {
+    id: 'skilled',
+    label: 'Skilled',
+    blurb: 'Plays a tidy board and will punish a sloppy stack.',
+    angleSteps: 17,
+    thinkMin: 0.55,
+    thinkMax: 1.1,
+    noise: 0.18,
+    blunderChance: 0.06,
+    curseDelay: 1.6,
+    powerAppetite: 0.8,
+  },
+  merciless: {
+    id: 'merciless',
+    label: 'Merciless',
+    blurb: 'Hunts power bubbles and curses you the moment it can.',
+    angleSteps: 25,
+    thinkMin: 0.3,
+    thinkMax: 0.6,
+    noise: 0,
+    blunderChance: 0,
+    curseDelay: 0.4,
+    powerAppetite: 1.4,
+  },
+}
+
+export const BOT_LEVEL_ORDER: readonly BotLevel[] = ['rookie', 'skilled', 'merciless']
+
+/** A move the AI has decided on: where to aim, and how the piece should sit. */
+export interface BotMove {
+  /** Radians, already clamped to +/- MAX_AIM_ANGLE. */
+  angle: number
+  /** Absolute rotation the piece should be in when it launches. */
+  rot: Rotation
+  /** The evaluated score, for tests and debugging. */
+  score: number
+}
+
+/**
+ * An opponent that is not a person. It satisfies NetSession, so the whole
+ * versus stack — curses, the opponent mini-board, the rematch handshake —
+ * works against it unchanged.
+ */
+export interface BotSession {
+  readonly session: NetSession
+  /** Drive the bot's own game. Called from the main loop. */
+  update(dt: number): void
+  dispose(): void
+}
+
+export interface BotOptions {
+  seed: number
+  level: BotLevel
+  difficulty: Difficulty
+}
 
 export interface VersusHooks {
   onOpponentUpdate(view: OpponentView): void

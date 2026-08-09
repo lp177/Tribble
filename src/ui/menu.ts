@@ -2,9 +2,12 @@
 // Dark Material / paper-elements flavored; all styling lives in src/style.css.
 
 import {
+  BOT_LEVELS,
+  BOT_LEVEL_ORDER,
   DEFAULT_BINDINGS,
   DIFFICULTIES,
   DIFFICULTY_ORDER,
+  type BotLevel,
   type Difficulty,
   type GameAction,
   type GameOverData,
@@ -72,6 +75,13 @@ const FOCUSABLE_SELECTOR =
 const RIPPLE_FALLBACK_MS = 900
 
 let motionQuery: MediaQueryList | null = null
+
+/**
+ * The AI level the player last picked. It is deliberately not part of Settings
+ * — it is a per-session choice — but it lives at module scope so re-entering
+ * the lobby (or rebuilding the menu) offers the same opponent again.
+ */
+let botLevel: BotLevel = 'skilled'
 
 /**
  * True when menu animations must be suppressed: the system preference, or the
@@ -737,6 +747,102 @@ export function createMenu(
   const lobbyBody = el('div', 'card-body scroll-y')
   const lobbyPanels = el('div', 'lobby-panels')
 
+  // The AI panel comes first: it is the only option that needs nothing from
+  // anyone else — no friend, no code, no connection.
+  const botPanel = el('div', 'panel panel--bot')
+  const botLevelHeading = el('h4', 'group-title', 'Opponent level')
+  botLevelHeading.id = 'bot-level-label'
+  const botLevelList = el('div', 'level-picker')
+  botLevelList.setAttribute('role', 'radiogroup')
+  botLevelList.setAttribute('aria-labelledby', botLevelHeading.id)
+  const botLevelOptions = new Map<BotLevel, HTMLButtonElement>()
+
+  function syncBotLevel(): void {
+    for (const [id, opt] of botLevelOptions) {
+      const on = id === botLevel
+      opt.setAttribute('aria-checked', on ? 'true' : 'false')
+      opt.classList.toggle('is-selected', on)
+      opt.tabIndex = on ? 0 : -1
+    }
+  }
+
+  function chooseBotLevel(id: BotLevel): void {
+    if (botLevel === id) return
+    botLevel = id
+    syncBotLevel()
+  }
+
+  // Same radio model as the difficulty picker: one tab stop, arrows move the
+  // selection, Home/End jump to the ends.
+  for (const id of BOT_LEVEL_ORDER) {
+    const config = BOT_LEVELS[id]
+    const opt = el('button', 'level-option')
+    opt.type = 'button'
+    opt.id = `bot-level-${id}`
+    opt.dataset.botLevel = id
+    opt.setAttribute('role', 'radio')
+    opt.setAttribute('aria-checked', 'false')
+    opt.tabIndex = -1
+    const name = el('span', 'level-name', config.label)
+    name.id = `bot-level-${id}-name`
+    const blurb = el('span', 'level-blurb', config.blurb)
+    blurb.id = `bot-level-${id}-blurb`
+    // Name the radio after the tier alone and let the blurb describe it, so it
+    // reads as "Skilled, radio" rather than as a whole sentence.
+    opt.setAttribute('aria-labelledby', name.id)
+    opt.setAttribute('aria-describedby', blurb.id)
+    opt.append(name, blurb)
+    attachInteractions(opt)
+    opt.addEventListener('click', () => chooseBotLevel(id))
+    opt.addEventListener('keydown', (e) => {
+      const at = BOT_LEVEL_ORDER.indexOf(id)
+      const last = BOT_LEVEL_ORDER.length - 1
+      let to = -1
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') to = at === last ? 0 : at + 1
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') to = at === 0 ? last : at - 1
+      else if (e.key === 'Home') to = 0
+      else if (e.key === 'End') to = last
+      if (to < 0) return
+      // Arrows belong to the group, not to the screen behind it.
+      e.preventDefault()
+      e.stopPropagation()
+      const next = BOT_LEVEL_ORDER[to]
+      chooseBotLevel(next)
+      const target = botLevelOptions.get(next)
+      if (target !== undefined) target.focus()
+    })
+    botLevelOptions.set(id, opt)
+    botLevelList.appendChild(opt)
+  }
+
+  const botLevelGroup = el('div', 'level-group')
+  botLevelGroup.append(botLevelHeading, botLevelList)
+  const botBtn = button(
+    'Play the machine',
+    'filled',
+    () => {
+      // A code left over from an abandoned host attempt must not linger behind
+      // the match that is starting instead.
+      setVersusCode(null)
+      setVersusStatus('Starting a match against the machine…')
+      cb.onPlayBot(botLevel)
+    },
+    'btn--block',
+  )
+  // The offline option is the one that always works, so it takes first focus.
+  botBtn.dataset.initialFocus = ''
+  botPanel.append(
+    el('h3', 'panel-title', 'Solo versus'),
+    el(
+      'p',
+      'panel-note',
+      'A full versus match against the AI: same rules, same power bubbles, same curses — no connection needed.',
+    ),
+    botLevelGroup,
+    botBtn,
+  )
+  syncBotLevel()
+
   const hostPanel = el('div', 'panel')
   const hostBtn = button('Host game', 'filled', () => {
     setVersusCode(null)
@@ -746,7 +852,7 @@ export function createMenu(
   const roomCode = el('output', 'room-code')
   roomCode.hidden = true
   roomCode.id = 'room-code'
-  const hostNote = el('p', 'panel-note', 'Create a room and share the 5-character code.')
+  const hostNote = el('p', 'panel-note', 'Create a room and share the 5-character code with a friend.')
   hostPanel.append(el('h3', 'panel-title', 'Host game'), hostNote, hostBtn, roomCode)
 
   const joinPanel = el('div', 'panel')
@@ -788,14 +894,18 @@ export function createMenu(
     joinBtn,
   )
 
-  lobbyPanels.append(hostPanel, joinPanel)
+  lobbyPanels.append(botPanel, hostPanel, joinPanel)
   const lobbyStatus = el('p', 'status-line')
   lobbyStatus.setAttribute('role', 'status')
   lobbyStatus.setAttribute('aria-live', 'polite')
   const lobbyActions = el('div', 'card-actions')
   lobbyActions.append(button('Cancel', 'text', () => cb.onCancelVersus()))
   lobbyBody.append(
-    el('p', 'card-sub', 'Both players play their own board with the same piece sequence. Top out and you lose.'),
+    el(
+      'p',
+      'card-sub',
+      'Two boards, the same piece sequence, curses flying both ways. Top out and you lose — whether the other board belongs to the machine or to a friend.',
+    ),
     lobbyPanels,
     lobbyStatus,
   )

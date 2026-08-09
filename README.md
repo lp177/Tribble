@@ -35,6 +35,10 @@ before the stack reaches your launcher.
   instantly and plays with no connection at all (only versus needs the network). It keeps
   checking for new deploys in the background and offers a **Reload** prompt when one lands,
   saving your run first — so a refresh can never leave you stuck on a stale build.
+- **Versus against the AI** — no friend, no connection, no room code. Pick **Rookie**,
+  **Skilled** or **Merciless** under Versus and play a full versus match against the machine:
+  same rules, same power bubbles, same curses flying both ways. Merciless hunts power bubbles
+  and curses you the moment it can.
 - **Versus mode** — peer-to-peer over WebRTC (PeerJS): host a room, share the 5-letter code.
   Clearing cells can release **power bubbles** that float toward the top — catch one with a
   launched piece to store a **curse** (garbage rows, speed-up, fog, scramble, mirrored
