@@ -137,6 +137,33 @@ const stillPlaying = await page.evaluate(
 )
 expect('update prompt does not interrupt the run', stillPlaying)
 
+// --- 3b. The prompt must be usable from a menu screen too -------------------
+// The menu layer sits at z-index 20 and lays a full-viewport backdrop-filter
+// with pointer-events: auto over everything under it. A prompt beneath that is
+// dimmed AND unclickable, which is exactly what shipped first.
+if (bannerSeen) {
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(600)
+  const onMenu = await page.evaluate(
+    () => [...document.querySelectorAll('section')].filter((s) => s.offsetParent !== null).length > 0,
+  )
+  if (onMenu) {
+    const topmost = await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('.update-banner button')].find((b) =>
+        /reload/i.test(b.textContent ?? ''),
+      )
+      if (!btn) return { ok: false, why: 'no reload button' }
+      const r = btn.getBoundingClientRect()
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+      return { ok: btn.contains(hit) || hit === btn, why: hit?.className ?? 'none' }
+    })
+    expect('update prompt is clickable over a menu screen', topmost.ok, `hit=${topmost.why}`)
+    await page.screenshot({ path: '/tmp/tribble-update-over-menu.png' })
+  } else {
+    console.log('     (could not reach a menu screen; overlay check skipped)')
+  }
+}
+
 // --- 4. Accepting the update swaps to the new version -----------------------
 if (bannerSeen) {
   const savedBefore = await page.evaluate(

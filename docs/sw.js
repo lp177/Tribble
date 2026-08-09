@@ -18,12 +18,12 @@
  * posts SKIP_WAITING when they accept.
  */
 
-const BUILD_ID = 'fb2a436f33b2'
+const BUILD_ID = '5f7c9e23b542'
 const PRECACHE = [
   "./index.html",
   "./manifest.webmanifest",
-  "./assets/index-48HATaaZ.js",
-  "./assets/index-Bdw2n-lo.css",
+  "./assets/index-CxUyBSQX.js",
+  "./assets/index-RHAimDPD.css",
   "./icon-192.png",
   "./icon-512.png",
   "./icon-maskable-512.png"

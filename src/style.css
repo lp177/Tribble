@@ -1817,7 +1817,10 @@ body {
   position: absolute;
   right: 16px;
   bottom: 16px;
-  z-index: 6;
+  /* Above .menu-layer (20): the update prompt is app-level, and the menu
+     screens lay a full-viewport backdrop-filter over everything beneath them,
+     which would both dim it and swallow its clicks. */
+  z-index: 30;
   display: flex;
   align-items: center;
   gap: 16px;
@@ -1866,7 +1869,8 @@ body {
   position: absolute;
   bottom: 16px;
   left: 16px;
-  z-index: 5;
+  /* Same reasoning as .update-banner, one step below it. */
+  z-index: 29;
   display: flex;
   align-items: center;
   gap: 8px;
