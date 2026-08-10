@@ -1186,10 +1186,65 @@ body {
   color: var(--on-surface-variant);
 }
 
+/* The invite: a link to send, with the code kept as the spoken fallback. */
+.invite {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.invite-link {
+  /* A URL is longer than the field; show its tail-free start and let the
+     browser scroll the rest. Monospace keeps it from reading as prose. */
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.invite-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.invite-actions .btn {
+  flex: 1 1 140px;
+}
+
+/* Confirmation lives on the button itself: the eye is already there. */
+.invite-actions .btn--filled.is-copied {
+  background: linear-gradient(180deg, var(--good) 0%, #3cb98a 100%);
+  color: #05231a;
+}
+
+.invite-actions .btn--filled.is-copied:hover {
+  box-shadow: var(--elev-3), 0 0 24px rgba(93, 219, 164, 0.35);
+}
+
+.invite-feedback {
+  /* Reserved height: feedback appearing must not shove the code line down. */
+  min-height: 1.2em;
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--primary-light);
+}
+
+.invite-code {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.invite-code-caption {
+  font-size: 0.78rem;
+  color: var(--on-surface-variant);
+}
+
 .room-code {
   display: block;
   padding: 10px 12px;
-  font: 800 clamp(1.6rem, 7vw, 2.4rem) / 1.1 var(--font-mono);
+  font: 800 clamp(1.4rem, 6vw, 2rem) / 1.1 var(--font-mono);
   letter-spacing: 0.28em;
   text-indent: 0.28em;
   text-align: center;

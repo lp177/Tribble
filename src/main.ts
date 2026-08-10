@@ -41,6 +41,7 @@ import { createHud } from './ui/hud'
 import { createUpdateBanner } from './ui/update-banner'
 import { initUpdates } from './pwa/updates'
 import { hostSession, joinSession } from './net/p2p'
+import { clearInviteFromUrl, currentInviteCode } from './net/invite'
 import { createVersus } from './net/versus'
 import { createBotSession } from './net/bot-session'
 
@@ -453,11 +454,20 @@ async function hostVersus(): Promise<void> {
   const attempt = ++versusAttempt
   menu.setVersusStatus('Creating room…')
   try {
-    const p = hostSession(settings.playerName, (code) => {
-      if (attempt !== versusAttempt) return
-      menu.setVersusCode(code)
-      menu.setVersusStatus('Waiting for an opponent… share the code!')
-    })
+    const p = hostSession(
+      settings.playerName,
+      (code) => {
+        if (attempt !== versusAttempt) return
+        menu.setVersusCode(code)
+        menu.setVersusStatus('Room open — send the link and keep this screen up.')
+      },
+      (err) => {
+        // The room survived a guest that could not connect; say so, or the
+        // player is left watching a screen where nothing happened.
+        if (attempt !== versusAttempt) return
+        menu.setVersusStatus(`Someone could not connect (${err.message}) — room still open.`)
+      },
+    )
     pendingConnect = p
     const s = await p
     if (attempt !== versusAttempt) {
@@ -510,6 +520,31 @@ async function joinVersus(code: string): Promise<void> {
       menu.setVersusStatus(`Could not join: ${(err as Error).message}`)
     }
   }
+}
+
+/**
+ * An invite link carries the room in the URL fragment. Clicking it *is* the
+ * intent to join, so we act on it before the player ever sees the title screen
+ * — no code to read, copy or type.
+ *
+ * Also runs on hashchange: an installed app (or an open tab) is handed the link
+ * without a reload.
+ */
+function consumeInviteLink(): void {
+  const code = currentInviteCode()
+  if (code === null) return
+  // Acted on once: a reload must not re-join a room that is long gone.
+  clearInviteFromUrl()
+  menu.setJoinCode(code)
+  if (mode !== 'menu') {
+    // Yanking someone out of a live run is worse than making them come back.
+    hud.announce('Invite link opened — leave this match to join', 'info')
+    return
+  }
+  menu.setVersusCode(null)
+  menu.setVersusStatus(`Joining room ${code}…`)
+  menu.show('versus-lobby')
+  void joinVersus(code)
 }
 
 // ---------------------------------------------------------------------------
@@ -576,6 +611,9 @@ const menu = createMenu(uiRoot, settings, {
 menu.setHasSave(loadSave() !== null)
 menu.show('title')
 applySettings()
+
+consumeInviteLink()
+window.addEventListener('hashchange', consumeInviteLink)
 
 // ---------------------------------------------------------------------------
 // Input wiring

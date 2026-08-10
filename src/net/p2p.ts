@@ -6,12 +6,18 @@ import { Peer } from 'peerjs'
 import type { DataConnection, PeerError } from 'peerjs'
 import { NET_PROTOCOL_VERSION } from '../types'
 import type { CancellablePromise, NetMsg, NetSession } from '../types'
+import { isRoomCode, normalizeCode, randomCode } from './invite'
 
-/** No lookalikes: excludes I, O, 0, 1. */
-const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
-const CODE_LENGTH = 5
 const MAX_CODE_TRIES = 3
+/** Getting connected, once there is someone on the other end to connect to. */
 const CONNECT_TIMEOUT_MS = 30_000
+/**
+ * How long an open room waits for a friend. Sharing a link means pasting it
+ * into a chat and waiting for someone to look at their phone, so this is
+ * generous on purpose — the old 30s barely outlived the copy.
+ */
+const HOST_WAIT_MS = 10 * 60_000
+const HOST_WAIT_MESSAGE = 'Nobody joined in time — host a new room'
 const PEER_ID_PREFIX = 'tribble-'
 
 /**
@@ -48,23 +54,13 @@ function friendlyError(err: PeerError<string>): Error {
   return new Error(ERROR_MESSAGES[err.type] ?? err.message ?? 'Connection failed')
 }
 
-function randomCode(): string {
-  let code = ''
-  for (let i = 0; i < CODE_LENGTH; i++) {
-    code += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]
-  }
-  return code
-}
-
-function normalizeCode(code: string): string {
-  return code.toUpperCase().replace(/[^A-Z0-9]/g, '')
-}
-
 interface AttemptCtx {
   setPeer(p: Peer): void
   succeed(session: NetSession): void
   fail(err: Error): void
   isSettled(): boolean
+  /** Restart the deadline; each phase of an attempt gets its own patience. */
+  waitFor(ms: number, message: string): void
 }
 
 /**
@@ -97,7 +93,12 @@ function cancellableSession(run: (ctx: AttemptCtx) => void): CancellablePromise<
     resolveFn(session)
   }
 
-  const timer = setTimeout(() => fail(new Error('timeout')), CONNECT_TIMEOUT_MS)
+  let timer = setTimeout(() => fail(new Error('Connection timed out')), CONNECT_TIMEOUT_MS)
+  const waitFor = (ms: number, message: string): void => {
+    if (settled) return
+    clearTimeout(timer)
+    timer = setTimeout(() => fail(new Error(message)), ms)
+  }
 
   run({
     setPeer: (p) => {
@@ -106,6 +107,7 @@ function cancellableSession(run: (ctx: AttemptCtx) => void): CancellablePromise<
     succeed,
     fail,
     isSettled: () => settled,
+    waitFor,
   })
 
   const cancellable = promise as CancellablePromise<NetSession>
@@ -278,8 +280,9 @@ function createSession(
 export function hostSession(
   name: string,
   onCode: (code: string) => void,
+  onGuestFailed?: (err: Error) => void,
 ): CancellablePromise<NetSession> {
-  return cancellableSession(({ setPeer, succeed, fail, isSettled }) => {
+  return cancellableSession(({ setPeer, succeed, fail, isSettled, waitFor }) => {
     let tries = 0
     let claimed: DataConnection | null = null
 
@@ -288,9 +291,40 @@ export function hostSession(
       const code = randomCode()
       const peer = new Peer(PEER_ID_PREFIX + code)
       setPeer(peer)
+      let announced = false
+      let rejoinTries = 0
 
       peer.on('open', () => {
-        if (!isSettled()) onCode(code)
+        if (isSettled()) return
+        // The room exists; from here we are waiting on a person, not a server.
+        waitFor(HOST_WAIT_MS, HOST_WAIT_MESSAGE)
+        // A reconnect re-opens the same room under the same id, so the link the
+        // player has already sent out stays the right one.
+        if (announced) return
+        announced = true
+        onCode(code)
+      })
+      /**
+       * A dropped signalling socket makes the room unreachable while it still
+       * looks open — the link goes quietly dead. Over a wait this long that is
+       * worth recovering from; if recovery fails PeerJS raises an error and the
+       * attempt ends loudly, as before.
+       */
+      peer.on('disconnected', () => {
+        if (isSettled() || peer.destroyed || rejoinTries >= MAX_RECONNECT_TRIES) return
+        rejoinTries += 1
+        const delay = Math.min(
+          RECONNECT_DELAY_MS * 2 ** (rejoinTries - 1),
+          RECONNECT_MAX_DELAY_MS,
+        )
+        setTimeout(() => {
+          if (isSettled() || peer.destroyed || !peer.disconnected) return
+          try {
+            peer.reconnect()
+          } catch (err) {
+            console.warn('p2p: host signalling reconnect failed', err)
+          }
+        }, delay)
       })
       peer.on('error', (err) => {
         if (isSettled()) return
@@ -309,7 +343,26 @@ export function hostSession(
           return
         }
         claimed = conn
-        exchangeHello(peer, conn, 'host', name, succeed, fail)
+        // Someone is here: a handshake that stalls must not sit on the long
+        // waiting-for-a-friend deadline.
+        waitFor(CONNECT_TIMEOUT_MS, 'Connection timed out')
+
+        /**
+         * A guest that fails mid-handshake takes down its own connection, not
+         * the room: the link is already out in a chat somewhere, so the next
+         * person to click it deserves an open door.
+         */
+        let released = false
+        const releaseGuest = (err: Error): void => {
+          if (released || isSettled()) return
+          released = true
+          claimed = null
+          conn.close()
+          waitFor(HOST_WAIT_MS, HOST_WAIT_MESSAGE)
+          onGuestFailed?.(err)
+        }
+
+        exchangeHello(peer, conn, 'host', name, succeed, releaseGuest)
       })
     }
 
@@ -320,7 +373,7 @@ export function hostSession(
 export function joinSession(code: string, name: string): CancellablePromise<NetSession> {
   return cancellableSession(({ setPeer, succeed, fail, isSettled }) => {
     const normalized = normalizeCode(code)
-    if (normalized.length !== CODE_LENGTH) {
+    if (!isRoomCode(normalized)) {
       fail(new Error('Invalid room code'))
       return
     }

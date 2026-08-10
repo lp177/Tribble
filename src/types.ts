@@ -742,7 +742,10 @@ export interface MenuApi {
   setHasSave(has: boolean): void
   /** Lobby helpers. */
   setVersusStatus(text: string): void
+  /** Shows (or clears) the hosted room: its invite link and its code. */
   setVersusCode(code: string | null): void
+  /** Pre-fills the join field, e.g. from an invite link the player opened. */
+  setJoinCode(code: string): void
   refreshSettings(s: Settings): void
 }
 

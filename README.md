@@ -39,7 +39,9 @@ before the stack reaches your launcher.
   **Skilled** or **Merciless** under Versus and play a full versus match against the machine:
   same rules, same power bubbles, same curses flying both ways. Merciless hunts power bubbles
   and curses you the moment it can.
-- **Versus mode** — peer-to-peer over WebRTC (PeerJS): host a room, share the 5-letter code.
+- **Versus mode** — peer-to-peer over WebRTC (PeerJS): host a room, then **copy or share the
+  invite link**. Your friend clicks it and lands straight in the match — nothing to read out,
+  nothing to type. (The room code is still there if you'd rather say it out loud.)
   Clearing cells can release **power bubbles** that float toward the top — catch one with a
   launched piece to store a **curse** (garbage rows, speed-up, fog, scramble, mirrored
   controls, rotation lock) and unleash it on your opponent. Last board standing wins.

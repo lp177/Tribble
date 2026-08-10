@@ -18,6 +18,7 @@ import {
   type Settings,
   type VersusEndData,
 } from '../types'
+import { CODE_LENGTH, currentInviteUrl, extractRoomCode, normalizeCode } from '../net/invite'
 
 const ACTIONS: readonly GameAction[] = [
   'aimLeft',
@@ -73,6 +74,10 @@ const FOCUSABLE_SELECTOR =
 
 /** Ripple animation length in style.css, plus slack: the removal safety net. */
 const RIPPLE_FALLBACK_MS = 900
+
+const COPY_LABEL = 'Copy invite link'
+/** How long the copy button stays in its "done" state before reverting. */
+const COPY_FEEDBACK_MS = 2400
 
 let motionQuery: MediaQueryList | null = null
 
@@ -849,47 +854,185 @@ export function createMenu(
     setVersusStatus('Creating room…')
     cb.onHostGame()
   })
+
+  // Everything below only exists once a room does.
+  const inviteBox = el('div', 'invite')
+  inviteBox.hidden = true
+
+  const inviteLabel = el('label', 'field-label', 'Invite link')
+  inviteLabel.htmlFor = 'invite-link'
+  const inviteInput = el('input', 'text-input invite-link')
+  inviteInput.id = 'invite-link'
+  inviteInput.type = 'text'
+  inviteInput.readOnly = true
+  inviteInput.spellcheck = false
+  inviteInput.autocomplete = 'off'
+  // Reading the link is not the point — grabbing it is. Any way in selects it,
+  // which is also the fallback when the clipboard is off limits.
+  inviteInput.addEventListener('focus', () => inviteInput.select())
+  inviteInput.addEventListener('click', () => inviteInput.select())
+
+  const inviteFeedback = el('p', 'invite-feedback')
+  inviteFeedback.id = 'invite-feedback'
+  inviteFeedback.setAttribute('role', 'status')
+  inviteFeedback.setAttribute('aria-live', 'polite')
+  inviteInput.setAttribute('aria-describedby', inviteFeedback.id)
+
   const roomCode = el('output', 'room-code')
   roomCode.hidden = true
   roomCode.id = 'room-code'
-  const hostNote = el('p', 'panel-note', 'Create a room and share the 5-character code with a friend.')
-  hostPanel.append(el('h3', 'panel-title', 'Host game'), hostNote, hostBtn, roomCode)
+  const inviteCodeBox = el('div', 'invite-code')
+  inviteCodeBox.append(
+    el('span', 'invite-code-caption', 'Can’t send a link? Read out the room code:'),
+    roomCode,
+  )
+
+  /** The link currently on offer; empty when there is no room. */
+  let inviteHref = ''
+  let copyResetTimer = 0
+
+  function restoreCopyLabel(): void {
+    window.clearTimeout(copyResetTimer)
+    copyResetTimer = 0
+    copyBtn.textContent = COPY_LABEL
+    copyBtn.classList.remove('is-copied')
+  }
+
+  async function writeClipboard(text: string): Promise<boolean> {
+    try {
+      // The async clipboard needs a secure context; on plain http it is absent.
+      if (navigator.clipboard !== undefined) {
+        await navigator.clipboard.writeText(text)
+        return true
+      }
+    } catch {
+      // Blocked or unavailable — the selection path below still gets there.
+    }
+    try {
+      inviteInput.focus()
+      inviteInput.select()
+      return document.execCommand('copy')
+    } catch {
+      return false
+    }
+  }
+
+  async function copyInvite(): Promise<void> {
+    if (inviteHref === '') return
+    const ok = await writeClipboard(inviteHref)
+    window.clearTimeout(copyResetTimer)
+    if (!ok) {
+      inviteInput.focus()
+      inviteInput.select()
+      inviteFeedback.textContent = 'Copying was blocked — the link is selected, press Ctrl+C.'
+      return
+    }
+    copyBtn.textContent = 'Link copied!'
+    copyBtn.classList.add('is-copied')
+    inviteFeedback.textContent = 'Invite link copied — send it to your friend.'
+    copyResetTimer = window.setTimeout(restoreCopyLabel, COPY_FEEDBACK_MS)
+  }
+
+  async function shareInvite(): Promise<void> {
+    if (inviteHref === '') return
+    try {
+      await navigator.share({
+        title: 'Tribble',
+        text: 'Join my Tribble match!',
+        url: inviteHref,
+      })
+    } catch (err) {
+      // Dismissing the share sheet is a normal outcome, not a failure.
+      if (err instanceof Error && err.name === 'AbortError') return
+      inviteFeedback.textContent = 'Sharing failed — copy the link instead.'
+    }
+  }
+
+  const copyBtn = button(
+    COPY_LABEL,
+    'filled',
+    () => {
+      void copyInvite()
+    },
+    'btn--block',
+  )
+  const shareBtn = button(
+    'Share…',
+    'tonal',
+    () => {
+      void shareInvite()
+    },
+    'btn--block',
+  )
+  // Only phones and tablets really have a share sheet; elsewhere it would be a
+  // button that leads nowhere.
+  shareBtn.hidden = typeof navigator.share !== 'function'
+
+  const inviteActions = el('div', 'invite-actions')
+  inviteActions.append(copyBtn, shareBtn)
+  inviteBox.append(inviteLabel, inviteInput, inviteActions, inviteFeedback, inviteCodeBox)
+
+  hostPanel.append(
+    el('h3', 'panel-title', 'Host game'),
+    el(
+      'p',
+      'panel-note',
+      'Create a room, then send the link. One tap and your friend is in the match — nothing to type.',
+    ),
+    hostBtn,
+    inviteBox,
+  )
 
   const joinPanel = el('div', 'panel')
   const joinField = el('div', 'field')
-  const joinLabel = el('label', 'field-label', 'Room code')
+  const joinLabel = el('label', 'field-label', 'Invite link or room code')
   joinLabel.htmlFor = 'join-code'
   const joinInput = el('input', 'text-input text-input--code')
   joinInput.id = 'join-code'
   joinInput.type = 'text'
-  joinInput.maxLength = 5
+  // Long enough for a pasted link: the browser truncates on paste, before the
+  // input handler ever gets to pull the code out of it.
+  joinInput.maxLength = 300
   joinInput.autocomplete = 'off'
   joinInput.spellcheck = false
   joinInput.placeholder = 'ABC23'
   joinInput.setAttribute('autocapitalize', 'characters')
   joinInput.addEventListener('input', () => {
-    const clean = joinInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '')
-    if (clean !== joinInput.value) joinInput.value = clean
-    joinBtn.disabled = clean.length === 0
+    const raw = joinInput.value
+    const code = extractRoomCode(raw)
+    if (code !== null) {
+      // A pasted link collapses to the code it carries.
+      if (raw !== code) joinInput.value = code
+    } else if (!/[:/#?]/.test(raw)) {
+      // Plain typing: keep it to code shape. A half-typed URL is left alone.
+      const clean = normalizeCode(raw).slice(0, CODE_LENGTH)
+      if (clean !== raw) joinInput.value = clean
+    }
+    syncJoinButton()
   })
   joinField.append(joinLabel, joinInput)
   const joinBtn = button('Join', 'accent', () => {
-    const code = joinInput.value.trim().toUpperCase()
-    if (code.length === 0) return
+    const code = extractRoomCode(joinInput.value)
+    if (code === null) return
     setVersusCode(null)
     setVersusStatus('Joining room…')
     cb.onJoinGame(code)
   })
   joinBtn.disabled = true
+
+  function syncJoinButton(): void {
+    joinBtn.disabled = extractRoomCode(joinInput.value) === null
+  }
+
   joinInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && joinInput.value.trim().length > 0) {
+    if (e.key === 'Enter' && !joinBtn.disabled) {
       e.preventDefault()
       joinBtn.click()
     }
   })
   joinPanel.append(
     el('h3', 'panel-title', 'Join game'),
-    el('p', 'panel-note', "Enter the code your opponent gave you."),
+    el('p', 'panel-note', 'Paste the link your opponent sent — or type their room code.'),
     joinField,
     joinBtn,
   )
@@ -1042,13 +1185,44 @@ export function createMenu(
   }
 
   function setVersusCode(code: string | null): void {
+    restoreCopyLabel()
+    inviteFeedback.textContent = ''
     if (code === null) {
+      inviteHref = ''
+      inviteInput.value = ''
+      inviteBox.hidden = true
       roomCode.hidden = true
       roomCode.textContent = ''
       return
     }
+    inviteHref = currentInviteUrl(code)
+    inviteInput.value = inviteHref
     roomCode.textContent = code
     roomCode.hidden = false
+    inviteBox.hidden = false
+    revealInvite()
+  }
+
+  /**
+   * The room only opens after a network round trip, so the link appears in a
+   * lobby the player has already scrolled — often below the fold. Bring it into
+   * view and put the cursor on the one thing left to do, unless they have
+   * meanwhile moved on to something else on the screen.
+   */
+  function revealInvite(): void {
+    const active = document.activeElement
+    if (active === null || active === document.body || active === hostBtn) {
+      copyBtn.focus({ preventScroll: true })
+    }
+    inviteBox.scrollIntoView({
+      block: 'nearest',
+      behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+    })
+  }
+
+  function setJoinCode(code: string): void {
+    joinInput.value = normalizeCode(code).slice(0, CODE_LENGTH)
+    syncJoinButton()
   }
 
   function syncControls(): void {
@@ -1130,6 +1304,7 @@ export function createMenu(
     },
     setVersusStatus,
     setVersusCode,
+    setJoinCode,
     refreshSettings(s: Settings): void {
       // The settings object is being replaced; a capture aimed at the old one
       // must not land on the new one.

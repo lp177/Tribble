@@ -145,10 +145,31 @@ inverts aim input. `useCurse()` pops the inventory and returns the kind; `main.t
 over the network.
 
 Networking: PeerJS. Host creates a peer with id `tribble-<CODE>` (`CODE` = 5 chars from
-`ABCDEFGHJKLMNPQRSTUVWXYZ23456789`), displays the code; guest connects to that id. Host picks
+`ABCDEFGHJKLMNPQRSTUVWXYZ23456789`); guest connects to that id. Host picks
 the seed and sends `start`. State snapshots (`state` msg, compact flat grid, −1 for empty)
 are throttled to 5 Hz. Disconnect = win for the remaining player. Rematch via
 request/accept with a fresh seed from the host. Messages are JSON (`NetMsg` in types.ts).
+
+Timeouts are per phase (`waitFor` on the attempt context): 30 s to get connected, but an open
+room waits 10 minutes for a friend — sharing a link means pasting it into a chat and waiting
+for someone to look at their phone.
+
+**Invites are links, not codes.** The host shares `<app-url>#r=<CODE>`; opening it joins that
+room directly. `src/net/invite.ts` owns both the code format and the link format, so the two
+can never drift apart. The code lives in the *fragment* on purpose: it never reaches the
+server, so the link needs no routing rules on a static host and the service worker keeps
+serving the same cached shell for it. `main.ts` consumes the link on load and on `hashchange`
+(an installed app is handed the link without a reload), then strips it from the address bar
+with `replaceState` so a reload cannot re-join a dead room. The reader accepts `#r=`,
+`#room=`, `#join=`, a bare `#ABC23` and the `?`-query equivalents, so a link mangled in
+transit still works; the code is still shown for reading out loud, and the join field pulls a
+code out of anything pasted into it (a full link, or a link inside a chat message).
+
+A shared link is only worth anything if the room outlives the sharing, so a host also
+survives a guest that dies mid-handshake (that connection is released and the room reopens,
+`onGuestFailed` reports it) and tries a bounded `peer.reconnect()` if the signalling socket
+drops while waiting. `src/net/invite.test.ts` covers the link format; `scripts/smoke-invite.mjs`
+drives the whole thing on real peers, including the failed-guest case.
 
 ## Save / resume
 
@@ -195,7 +216,8 @@ swap never hard-cuts or leaves stale notes ringing.
 Dark Material-inspired theme (see `src/style.css` tokens). Screens: **title** (logo, Resume
 if save exists, New Game, Versus, Settings, How to play), **settings** (volume sliders,
 reduced motion select, player name, key rebinding list — click a binding then press a key;
-Escape cancels), **versus lobby** (Host → shows room code; Join → code input; status line),
+Escape cancels), **versus lobby** (Host → invite link with copy/share buttons plus the room
+code as the spoken fallback; Join → link-or-code input; status line),
 **paused** overlay, **game over** overlay (score, best score in `localStorage`, retry/menu),
 **versus end** overlay (win/lose, rematch). Buttons have pointer-centered ripple (and a
 centered ripple on keyboard activation), visible focus rings, hover/active states. The HUD
@@ -348,6 +370,11 @@ are mandatory and must match `src/types.ts` signatures exactly.
   CancellablePromise<NetSession>`, `joinSession(code: string, name: string):
   CancellablePromise<NetSession>` using the `peerjs` npm package (default public broker).
   A `CancellablePromise<T>` is `Promise<T> & { cancel(): void }`.
+- `src/net/invite.ts` — room-code format (`randomCode`, `normalizeCode`, `isRoomCode`) and
+  the invite links that carry it (`buildInviteUrl`, `parseInviteCode`, `extractRoomCode`,
+  `hrefWithoutInvite`, plus `currentInviteCode` / `currentInviteUrl` / `clearInviteFromUrl`
+  wrappers that read `location`). Pure functions take the href explicitly so they are
+  testable without a DOM; no peerjs import, so the UI can use it freely.
 - `src/net/versus.ts` — `createVersus(game: Game, session: NetSession, hooks: VersusHooks):
   VersusController`. Wires game events → net (state throttle 5 Hz, gameOver), net → game
   (curses via `applyCurse`, opponent snapshots → hooks), rematch handshake (host re-seeds).
