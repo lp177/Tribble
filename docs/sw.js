@@ -18,7 +18,7 @@
  * posts SKIP_WAITING when they accept.
  */
 
-const BUILD_ID = '4ce1a5099ec2'
+const BUILD_ID = '0275a2a390fc'
 const PRECACHE = [
   "./index.html",
   "./manifest.webmanifest",

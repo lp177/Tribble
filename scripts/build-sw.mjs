@@ -31,7 +31,11 @@ const files = walk(OUT)
 const precache = [
   './index.html',
   './manifest.webmanifest',
-  ...files.filter((f) => f.startsWith('assets/') || f.endsWith('.png')),
+  // ...but not social-card.png: that is the Open Graph preview, fetched by
+  // crawlers and never by the game, and the .png sweep below would otherwise
+  // drag ~700KB into every offline install.
+  ...files.filter((f) => f !== 'social-card.png'
+    && (f.startsWith('assets/') || f.endsWith('.png'))),
 ].map((f) => (f.startsWith('./') ? f : `./${f}`))
 
 const hash = createHash('sha256')
